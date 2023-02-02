@@ -72,7 +72,7 @@ static void qdr_core_setup_init(qdr_core_t *core)
     qdr_adaptors_init(core);
 }
 
-qdr_core_t *qdr_core(qd_dispatch_t *qd, qd_router_mode_t mode, const char *area, const char *id)
+qdr_core_t *qdr_core(qd_dispatch_t *qd, qd_router_mode_t mode, const char *area, const char *id, const char *van_id)
 {
     qdr_core_t *core = NEW(qdr_core_t);
     ZERO(core);
@@ -81,6 +81,7 @@ qdr_core_t *qdr_core(qd_dispatch_t *qd, qd_router_mode_t mode, const char *area,
     core->router_mode         = mode;
     core->router_area         = area;
     core->router_id           = id;
+    core->van_id              = van_id;
     core->worker_thread_count = qd->thread_count;
     sys_atomic_init(&core->uptime_ticks, 0);
 
@@ -89,6 +90,10 @@ qdr_core_t *qdr_core(qd_dispatch_t *qd, qd_router_mode_t mode, const char *area,
     // module logs to the ROUTER_CORE module. There is no need to free the core->log as all log sources are.
     // freed by qd_dispatch_free()
     //
+    if (!!van_id) {
+        qd_log(LOG_ROUTER_CORE, QD_LOG_INFO, "Router is a member of Application Network: %s", van_id);
+    }
+
     //
     // Set up the threading support
     //

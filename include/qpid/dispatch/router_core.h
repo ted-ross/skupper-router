@@ -46,7 +46,7 @@ ENUM_DECLARE(qd_router_mode);
 /**
  * Allocate and start an instance of the router core module.
  */
-qdr_core_t *qdr_core(qd_dispatch_t *qd, qd_router_mode_t mode, const char *area, const char *id);
+qdr_core_t *qdr_core(qd_dispatch_t *qd, qd_router_mode_t mode, const char *area, const char *id, const char *van_id);
 
 /**
  * Stop and deallocate an instance of the router core.
