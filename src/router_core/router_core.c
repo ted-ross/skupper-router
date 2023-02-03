@@ -396,6 +396,11 @@ int qdr_core_get_worker_thread_count(const qdr_core_t *core)
     return core->worker_thread_count;
 }
 
+const char *qdr_core_van_id(const qdr_core_t *core)
+{
+    return core->van_id;
+}
+
 ALLOC_DECLARE(qdr_field_t);
 ALLOC_DEFINE(qdr_field_t);
 
