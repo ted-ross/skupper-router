@@ -37,40 +37,49 @@ typedef struct {
     qdr_connection_t    *conn;
 } tcplite_common_t;
 
-
-typedef struct tcplite_listener_t {
-    tcplite_common_t     common;
-    DEQ_LINKS(struct tcplite_listener_t);
-    uint64_t             link_id;
-    qdr_link_t          *in_link;
-} tcplite_listener_t;
+typedef struct tcplite_listener_t   tcplite_listener_t;
+typedef struct tcplite_connector_t  tcplite_connector_t;
+typedef struct tcplite_connection_t tcplite_connection_t;
 
 ALLOC_DECLARE(tcplite_listener_t);
+ALLOC_DECLARE(tcplite_connector_t);
+ALLOC_DECLARE(tcplite_connection_t);
+
+DEQ_DECLARE(tcplite_listener_t,   tcplite_listener_list_t);
+DEQ_DECLARE(tcplite_connector_t,  tcplite_connector_list_t);
+DEQ_DECLARE(tcplite_connection_t, tcplite_connection_list_t);
+
+
+struct tcplite_listener_t {
+    tcplite_common_t     common;
+    DEQ_LINKS(tcplite_listener_t);
+    uint64_t             link_id;
+    qdr_link_t          *in_link;
+};
+
 ALLOC_DEFINE(tcplite_listener_t);
 
 
 typedef struct tcplite_connector_t {
     tcplite_common_t     common;
-    DEQ_LINKS(struct tcplite_connector_t);
+    DEQ_LINKS(tcplite_connector_t);
     uint64_t             link_id;
     qdr_link_t          *out_link;
 } tcplite_connector_t;
 
-ALLOC_DECLARE(tcplite_connector_t);
 ALLOC_DEFINE(tcplite_connector_t);
 
 
-typedef struct tcplist_connection_t {
-    DEQ_LINKS(struct tcplite_connection_t);
+typedef struct tcplite_connection_t {
+    DEQ_LINKS(tcplite_connection_t);
+    pn_raw_connection_t *raw_conn;
+    qd_message_t        *client_stream;
+    qdr_delivery_t      *client_delivery;
+    qd_message_t        *server_stream;
+    qdr_delivery_t      *server_delivery;
 } tcplite_connection_t;
 
-ALLOC_DECLARE(tcplite_connection_t);
 ALLOC_DEFINE(tcplite_connection_t);
-
-
-DEQ_DECLARE(tcplite_listener_t,   tcplite_listener_list_t);
-DEQ_DECLARE(tcplite_connector_t,  tcplite_connector_list_t);
-DEQ_DECLARE(tcplite_connection_t, tcplite_connection_list_t);
 
 
 typedef struct {
@@ -119,7 +128,7 @@ static pn_data_t *TL_conn_properties(void)
 }
 
 
-static qdr_connection_t *TL_open_connection(uint64_t conn_id, bool incoming)
+static qdr_connection_t *TL_open_core_connection(uint64_t conn_id, bool incoming)
 {
     qdr_connection_t *conn;
     
@@ -172,7 +181,7 @@ static void TL_setup_listener(tcplite_listener_t *li)
     // Set up a core connection to handle all of the links and deliveries for this listener
     //
     li->common.conn_id = qd_server_allocate_connection_id(tcplite_context->server);
-    li->common.conn    = TL_open_connection(li->common.conn_id, true);
+    li->common.conn    = TL_open_core_connection(li->common.conn_id, true);
     qdr_connection_set_context(li->common.conn, li);
 
     //
@@ -192,7 +201,7 @@ static void TL_setup_connector(tcplite_connector_t *cr)
     // Set up a core connection to handle all of the links and deliveries for this connector
     //
     cr->common.conn_id = qd_server_allocate_connection_id(tcplite_context->server);
-    cr->common.conn    = TL_open_connection(cr->common.conn_id, false);
+    cr->common.conn    = TL_open_core_connection(cr->common.conn_id, false);
     qdr_connection_set_context(cr->common.conn, cr);
 
     //
@@ -272,7 +281,7 @@ static void CORE_drain(void *context, qdr_link_t *link, bool mode)
 
 static int CORE_push(void *context, qdr_link_t *link, int limit)
 {
-    return 0;
+    return qdr_link_process_deliveries(tcplite_context->core, link, limit);
 }
 
 
@@ -284,7 +293,7 @@ static uint64_t CORE_deliver(void *context, qdr_link_t *link, qdr_delivery_t *de
 
 static int CORE_get_credit(void *context, qdr_link_t *link)
 {
-    return 0;
+    return 1;
 }
 
 
