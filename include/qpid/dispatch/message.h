@@ -604,6 +604,95 @@ uint8_t qd_message_get_priority(qd_message_t *msg);
  */
 bool qd_message_oversize(const qd_message_t *msg);
 
+//=====================================================================================================
+// Unicast/Cut-through API
+//
+// This is an optimization for the case where the message is streaming and is being delivered to
+// exactly one destination.
+//=====================================================================================================
+/**
+ * Transition this message to unicast/cut-through operation.  This action cannot be reversed for a message.
+ *
+ * Once this mode is set for a message stream, the conventional methods for accessing the message body will
+ * no longer work.
+ *
+ * @param stream Pointer to the message
+ */
+void qd_message_start_unicast_cutthrough(qd_message_t *stream);
+
+/**
+ * Indicate whether this message stream is in unicast/cut-through mode.
+ *
+ * @param stream Pointer to the message
+ * @return true if the message is in unicast/cut-through mode
+ * @return false if not
+ */
+bool qd_message_is_unicast_cutthrough(const qd_message_t *stream);
+
+/**
+ * Indicate whether there is capacity to procude buffers into the stream.
+ *
+ * @param stream Pointer to the message
+ * @return true Yes, there is capacity to produce buffers
+ * @return false No, do not attempt to produce buffers
+ */
+bool qd_message_can_produce_buffers(const qd_message_t *stream);
+
+/**
+ * Produce a list of buffers into the message stream.  The pn_message_can_produce_buffers must be
+ * called prior to calling this function to determine whether there is capacity to produce a list
+ * of buffers into the stream.  If there is no capacity, this function must not be called.
+ *
+ * There is no scenario in which this function will partially consume the buffer list.
+ *
+ * @param stream Pointer to the message
+ * @param buffers Pointer to a list of buffers to be appended to the message stream
+ */
+void qd_message_produce_buffers(qd_message_t *stream, qd_buffer_list_t *buffers);
+
+/**
+ * Consume buffers from a message stream.
+ *
+ * @param stream Pointer to the message
+ * @param buffers Pointer to a list of buffers to fill.  Must be empty at the call.
+ * @param limit The maximum number of buffers that should be consumed.
+ * @return int The number of buffers actually consumed.
+ */
+int qd_message_consume_buffers(qd_message_t *stream, qd_buffer_list_t *buffers, int limit);
+
+/**
+ * Tell the message stream which connection is consuming its buffers.
+ *
+ * @param stream Pointer to the message
+ * @param connection Pointer to the qd_connection that is consuming this stream's buffers
+ */
+void qd_message_set_consumer_connection(qd_message_t *stream, qd_connection_t *connection);
+
+/**
+ * Return the connection that is consuming this message stream's buffers.
+ *
+ * @param stream Pointer to the message
+ * @return qd_connection_t* Pointer to the connection that is consuming buffers from this stream
+ */
+qd_connection_t *qd_message_get_consumer_connection(const qd_message_t *stream);
+
+/**
+ * Tell the message stream which connection is producing its buffers.
+ *
+ * @param stream Pointer to the message
+ * @param connection Pointer to the qd_connection that is producing this stream's buffers
+ */
+void qd_message_set_producer_connection(qd_message_t *stream, qd_connection_t *connection);
+
+/**
+ * Return the connection that is producing this message stream's buffers.
+ *
+ * @param stream Pointer to the message
+ * @return qd_connection_t* Pointer to the connection that is producing buffers to this stream
+ */
+qd_connection_t *qd_message_get_producer_connection(const qd_message_t *stream);
+
+
 ///@}
 
 #endif
