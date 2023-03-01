@@ -2999,3 +2999,54 @@ void qd_message_clear_q2_unblocked_handler(qd_message_t *msg)
         UNLOCK(&content->lock);
     }
 }
+
+
+void qd_message_start_unicast_cutthrough(qd_message_t *stream)
+{
+}
+
+
+bool qd_message_is_unicast_cutthrough(const qd_message_t *stream)
+{
+    return false;
+}
+
+
+bool qd_message_can_produce_buffers(const qd_message_t *stream)
+{
+    return true;
+}
+
+
+bool qd_message_produce_buffers(qd_message_t *stream, qd_buffer_list_t *buffers)
+{
+    return false;
+}
+
+
+int qd_message_consume_buffers(qd_message_t *stream, qd_buffer_list_t *buffers, int limit)
+{
+    return 0;
+}
+
+
+void qd_message_set_consumer_connection(qd_message_t *stream, qd_connection_t *connection)
+{
+}
+
+
+qd_connection_t *qd_message_get_consumer_connection(const qd_message_t *stream)
+{
+    return 0;
+}
+
+
+void qd_message_set_producer_connection(qd_message_t *stream, qd_connection_t *connection)
+{
+}
+
+
+qd_connection_t *qd_message_get_producer_connection(const qd_message_t *stream)
+{
+    return 0;
+}
