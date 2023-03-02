@@ -647,10 +647,8 @@ bool qd_message_can_produce_buffers(const qd_message_t *stream);
  *
  * @param stream Pointer to the message
  * @param buffers Pointer to a list of buffers to be appended to the message stream
- * @return true if at least one more buffer list can be produced into the stream
- * @return false if the stream is now blocked for producing buffers
  */
-bool qd_message_produce_buffers(qd_message_t *stream, qd_buffer_list_t *buffers);
+void qd_message_produce_buffers(qd_message_t *stream, qd_buffer_list_t *buffers);
 
 /**
  * Consume buffers from a message stream.

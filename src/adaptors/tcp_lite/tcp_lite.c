@@ -148,18 +148,21 @@ typedef struct {
 
 static tcplite_context_t *tcplite_context;
 
+static void on_connection_event_CSIDE_IO(pn_event_t *e, qd_server_t *qd_server, void *context);
+
+
 
 //=================================================================================
 // Core Activation Handler
 //=================================================================================
-static void on_core_activate_listener(void *context)
+static void on_core_activate_LSIDE(void *context)
 {
     qdr_connection_t *core_conn = ((tcplite_listener_t*) context)->conn;
     qdr_connection_process(core_conn);
 }
 
 
-static void on_core_activate_connector(void *context)
+static void on_core_activate_CSIDE(void *context)
 {
     qdr_connection_t *core_conn = ((tcplite_connector_t*) context)->conn;
     qdr_connection_process(core_conn);
@@ -330,7 +333,7 @@ static void drain_read_buffers_IO(pn_raw_connection_t *raw_conn)
 }
 
 
-static void produce_read_buffers_IO(pn_raw_connection_t *raw_conn, qd_message_t *stream)
+static bool produce_read_buffers_IO(pn_raw_connection_t *raw_conn, qd_message_t *stream)
 {
     if (qd_message_can_produce_buffers(stream)) {
         qd_buffer_list_t qd_buffers = DEQ_EMPTY;
@@ -340,14 +343,21 @@ static void produce_read_buffers_IO(pn_raw_connection_t *raw_conn, qd_message_t 
         while ((count = pn_raw_connection_take_read_buffers(raw_conn, raw_buffers, RAW_BUFFER_BATCH_SIZE))) {
             for (size_t i = 0; i < count; i++) {
                 qd_buffer_t *buf = (qd_buffer_t*) raw_buffers[i].context;
-                DEQ_INSERT_TAIL(qd_buffers, buf);
+                if (qd_buffer_size(buf) > 0) {
+                    DEQ_INSERT_TAIL(qd_buffers, buf);
+                } else {
+                    qd_buffer_free(buf);
+                }
             }
         }
 
         if (!DEQ_IS_EMPTY(qd_buffers)) {
             qd_message_produce_buffers(stream, &qd_buffers);
+            return true;
         }
     }
+
+    return false;
 }
 
 
@@ -438,6 +448,93 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
 }
 
 
+static void extract_metadata_from_stream_CSIDE(tcplite_connection_t *conn)
+{
+    qd_iterator_t *f_iter  = qd_message_field_iterator(conn->client_stream, QD_FIELD_REPLY_TO);
+    qd_iterator_t *ap_iter = qd_message_field_iterator(conn->client_stream, QD_FIELD_APPLICATION_PROPERTIES);
+
+    if (!!f_iter) {
+        conn->reply_to = (char*) qd_iterator_copy(f_iter);
+        qd_iterator_free(f_iter);
+    }
+
+    if (!!ap_iter) {
+        qd_parsed_field_t *ap = qd_parse(ap_iter);
+
+        if (!!ap) {
+            do {
+                if (!qd_parse_ok(ap) || !qd_parse_is_map(ap)) {
+                    break;
+                }
+
+                uint32_t count = qd_parse_sub_count(ap);
+                qd_parsed_field_t *id_value = 0;
+                for (uint32_t i = 0; i < count; i++) {
+                    qd_parsed_field_t *key = qd_parse_sub_key(ap, i);
+                    if (key == 0) {
+                        break;
+                    }
+                    qd_iterator_t *key_iter = qd_parse_raw(key);
+                    if (!!key_iter && qd_iterator_equal(key_iter, (const unsigned char*) QD_AP_FLOW_ID)) {
+                        id_value = qd_parse_sub_value(ap, i);
+                    }
+                }
+
+                if (!!id_value) {
+                    vflow_set_ref_from_parsed(conn->common.vflow, VFLOW_ATTRIBUTE_COUNTERFLOW, id_value);
+                }
+            } while (false);
+            qd_parse_free(ap);
+        }
+
+        qd_iterator_free(ap_iter);
+    }
+}
+
+
+static void handle_incoming_delivery_CSIDE(tcplite_connector_t *cr, qdr_link_t *link, qdr_delivery_t *delivery)
+{
+    printf("handle_incoming_delivery_CSIDE\n");
+    tcplite_connection_t *conn = new_tcplite_connection_t();
+    ZERO(conn);
+
+    qdr_delivery_incref(delivery, "CORE_deliver CSIDE");
+
+    conn->common.context_type = TL_CONNECTION;
+    conn->common.parent       = (tcplite_common_t*) cr;
+
+    conn->listener_side   = false;
+    conn->state           = CSIDE_RAW_CONNECTION_OPENING;
+    conn->client_delivery = delivery;
+    conn->client_link     = link;
+    conn->client_stream   = qdr_delivery_message(delivery);
+    sys_mutex_init(&conn->common.lock);
+
+    extract_metadata_from_stream_CSIDE(conn);
+
+    qd_message_start_unicast_cutthrough(conn->client_stream);
+
+    conn->common.vflow = vflow_start_record(VFLOW_RECORD_FLOW, cr->common.vflow);
+    vflow_set_uint64(conn->common.vflow, VFLOW_ATTRIBUTE_OCTETS, 0);
+    vflow_add_rate(conn->common.vflow, VFLOW_ATTRIBUTE_OCTETS, VFLOW_ATTRIBUTE_OCTET_RATE);
+
+    conn->conn_id         = qd_server_allocate_connection_id(tcplite_context->server);
+    conn->context.context = conn;
+    conn->context.handler = on_connection_event_CSIDE_IO;
+
+    conn->raw_conn = pn_raw_connection();
+    pn_raw_connection_set_context(conn->raw_conn, &conn->context);
+    pn_proactor_raw_connect(tcplite_context->proactor, conn->raw_conn, cr->adaptor_config.host_port);
+}
+
+
+/**
+ * Manage the steady-state flow of a bi-directional connection from the listener-side point of view.
+ *
+ * @param conn Pointer to the TCP connection record
+ * @return true if IO processing should be repeated due to state changes
+ * @return false if IO processing should suspend until the next external event
+ */
 static bool manage_flow_LSIDE_IO(tcplite_connection_t *conn)
 {
     printf("manage_flow_LSIDE_IO [C%"PRIu64"]\n", conn->conn_id);
@@ -459,6 +556,8 @@ static bool manage_flow_LSIDE_IO(tcplite_connection_t *conn)
 
             // TEMPORARY - remove once the full loop is complete
             pn_raw_connection_write_close(conn->raw_conn);
+
+            return true;
         }
 
         //
@@ -489,12 +588,18 @@ static bool manage_flow_LSIDE_IO(tcplite_connection_t *conn)
 
 static bool connection_run_LSIDE_IO(tcplite_connection_t *conn)
 {
-    if (conn->state == LSIDE_FLOW) {
+    bool repeat = false;
+
+    switch (conn->state) {
+    case LSIDE_INITIAL:
         //
-        // Manage the ongoing bidirectional flow of the connection.
+        // Begin the setup of the inbound and outbound links for this connection.
         //
-        return manage_flow_LSIDE_IO(conn);
-    } else if (conn->state == LSIDE_LINK_SETUP) {
+        link_setup_LSIDE_IO(conn);
+        set_state_IO(conn, LSIDE_LINK_SETUP);
+        break;
+
+    case LSIDE_LINK_SETUP:
         //
         // If we have a reply-to address, compose the stream message, convert it to a
         // unicast/cut-through stream and send it.
@@ -502,25 +607,46 @@ static bool connection_run_LSIDE_IO(tcplite_connection_t *conn)
         //
         if (try_compose_and_send_client_stream_LSIDE_IO(conn)) {
             set_state_IO(conn, LSIDE_FLOW);
-            return true;
+            repeat = true;
         }
-    } else if (conn->state == LSIDE_INITIAL) {
+        break;
+
+    case LSIDE_FLOW:
         //
-        // Begin the setup of the inbound and outbound links for this connection.
+        // Manage the ongoing bidirectional flow of the connection.
         //
-        link_setup_LSIDE_IO(conn);
-        set_state_IO(conn, LSIDE_LINK_SETUP);
+        repeat = manage_flow_LSIDE_IO(conn);
+        break;
+
+    default:
+        assert(false);
+        break;
     }
 
-    return false;
+    return repeat;
 }
 
 
-/*
-static void connection_run_connector_side(tcplite_connection_t *conn)
+static bool connection_run_CSIDE_IO(tcplite_connection_t *conn)
 {
+    bool repeat = false;
+
+    switch (conn->state) {
+        case CSIDE_RAW_CONNECTION_OPENING:
+            break;
+
+        case CSIDE_STREAM_START:
+            break;
+
+        case CSIDE_FLOW:
+            break;
+
+        default:
+            assert(false);
+            break;
+    }
+    return repeat;
 }
-*/
 
 
 //=================================================================================
@@ -533,13 +659,11 @@ static void on_connection_event_LSIDE_IO(pn_event_t *e, qd_server_t *qd_server, 
 }
 
 
-/*
-static void on_connection_event_connector_side(pn_event_t *e, qd_server_t *qd_server, void *context)
+static void on_connection_event_CSIDE_IO(pn_event_t *e, qd_server_t *qd_server, void *context)
 {
-    printf("on_connection_event_connector_side: %s\n", pn_event_type_name(pn_event_type(e)));
-    connection_run_connector_side((tcplite_connection_t*) context);
+    printf("on_connection_event_CSIDE_IO: %s\n", pn_event_type_name(pn_event_type(e)));
+    while (connection_run_CSIDE_IO((tcplite_connection_t*) context)) {}
 }
-*/
 
 
 void on_accept(qd_adaptor_listener_t *listener, pn_listener_t *pn_listener, void *context)
@@ -552,7 +676,7 @@ void on_accept(qd_adaptor_listener_t *listener, pn_listener_t *pn_listener, void
 
     conn->common.context_type = TL_CONNECTION;
     conn->common.parent       = (tcplite_common_t*) li;
-    
+
     conn->listener_side = true;
     conn->state         = LSIDE_INITIAL;
     sys_mutex_init(&conn->common.lock);
@@ -588,6 +712,15 @@ static void CORE_first_attach(void               *context,
                               qd_session_class_t  ssn_class)
 {
     printf("CORE_first_attach\n");
+    tcplite_common_t *common = (tcplite_common_t*) qdr_connection_get_context(conn);
+    qdr_link_set_context(link, common);
+
+    qdr_terminus_t *local_source = qdr_terminus(0);
+    qdr_terminus_t *local_target = qdr_terminus(0);
+
+    qdr_terminus_set_address_iterator(local_source, qdr_terminus_get_address(target));
+    qdr_terminus_set_address_iterator(local_target, qdr_terminus_get_address(source));
+    qdr_link_second_attach(link, local_source, local_target);
 }
 
 
@@ -663,6 +796,13 @@ static int CORE_push(void *context, qdr_link_t *link, int limit)
 
 static uint64_t CORE_deliver(void *context, qdr_link_t *link, qdr_delivery_t *delivery, bool settled)
 {
+    printf("CORE_deliver\n");
+    tcplite_common_t *common = (tcplite_common_t*) qdr_link_get_context(link);
+
+    if (common->context_type == TL_CONNECTOR) {
+        handle_incoming_delivery_CSIDE((tcplite_connector_t*) common, link, delivery);
+    }
+
     return PN_ACCEPTED;
 }
 
@@ -706,7 +846,7 @@ QD_EXPORT void *qd_dispatch_configure_tcp_listener(qd_dispatch_t *qd, qd_entity_
             "Configured TcpListener for %s, %s:%s",
             li->adaptor_config.address, li->adaptor_config.host, li->adaptor_config.port);
 
-    li->common.activate_timer = qd_timer(tcplite_context->qd, on_core_activate_listener, li);
+    li->common.activate_timer = qd_timer(tcplite_context->qd, on_core_activate_LSIDE, li);
     li->common.context_type   = TL_LISTENER;
 
     sys_mutex_lock(&tcplite_context->lock);
@@ -755,7 +895,7 @@ QD_EXPORT void *qd_dispatch_configure_tcp_connector(qd_dispatch_t *qd, qd_entity
         return 0;
     }
 
-    cr->common.activate_timer = qd_timer(tcplite_context->qd, on_core_activate_connector, cr);
+    cr->common.activate_timer = qd_timer(tcplite_context->qd, on_core_activate_CSIDE, cr);
     cr->common.context_type   = TL_CONNECTOR;
 
     qd_log(tcplite_context->log_source, QD_LOG_INFO,

@@ -3003,50 +3003,82 @@ void qd_message_clear_q2_unblocked_handler(qd_message_t *msg)
 
 void qd_message_start_unicast_cutthrough(qd_message_t *stream)
 {
+    qd_message_content_t *content = MSG_CONTENT(stream);
+    sys_atomic_init(&content->uct_produce_slot, 0);
+    sys_atomic_init(&content->uct_consume_slot, 0);
+    content->uct_enabled = true;
 }
 
 
 bool qd_message_is_unicast_cutthrough(const qd_message_t *stream)
 {
-    return false;
+    qd_message_content_t *content = MSG_CONTENT(stream);
+    return content->uct_enabled;
 }
 
 
 bool qd_message_can_produce_buffers(const qd_message_t *stream)
 {
-    return true;
+    qd_message_content_t *content = MSG_CONTENT(stream);
+    return (sys_atomic_get(&content->uct_consume_slot) - sys_atomic_get(&content->uct_produce_slot)) % UCT_SLOT_COUNT != 1;
 }
 
 
-bool qd_message_produce_buffers(qd_message_t *stream, qd_buffer_list_t *buffers)
+void qd_message_produce_buffers(qd_message_t *stream, qd_buffer_list_t *buffers)
 {
-    return false;
+    qd_message_content_t *content = MSG_CONTENT(stream);
+    uint32_t useSlot = sys_atomic_get(&content->uct_produce_slot);
+    DEQ_MOVE(*buffers, content->uct_slots[useSlot]);
+    sys_atomic_set(&content->uct_produce_slot, (useSlot + 1) % UCT_SLOT_COUNT);
 }
 
 
 int qd_message_consume_buffers(qd_message_t *stream, qd_buffer_list_t *buffers, int limit)
 {
-    return 0;
+    qd_message_content_t *content = MSG_CONTENT(stream);
+    int  count = 0;
+    bool empty = sys_atomic_get(&content->uct_consume_slot) == sys_atomic_get(&content->uct_produce_slot);
+    while (count < limit && !empty) {
+        uint32_t useSlot = sys_atomic_get(&content->uct_consume_slot);
+        while (count < limit && !DEQ_IS_EMPTY(content->uct_slots[useSlot])) {
+            qd_buffer_t *buf = DEQ_HEAD(content->uct_slots[useSlot]);
+            DEQ_REMOVE_HEAD(content->uct_slots[useSlot]);
+            DEQ_INSERT_TAIL(*buffers, buf);
+            count++;
+        }
+        if (DEQ_IS_EMPTY(content->uct_slots[useSlot])) {
+            sys_atomic_set(&content->uct_consume_slot, (useSlot + 1) % UCT_SLOT_COUNT);
+        }
+        empty = sys_atomic_get(&content->uct_consume_slot) == sys_atomic_get(&content->uct_produce_slot);
+    }
+
+    return count;
 }
 
 
 void qd_message_set_consumer_connection(qd_message_t *stream, qd_connection_t *connection)
 {
+    qd_message_content_t *content = MSG_CONTENT(stream);
+    content->uct_consumer_connection = connection;
 }
 
 
 qd_connection_t *qd_message_get_consumer_connection(const qd_message_t *stream)
 {
-    return 0;
+    qd_message_content_t *content = MSG_CONTENT(stream);
+    return content->uct_consumer_connection;
 }
 
 
 void qd_message_set_producer_connection(qd_message_t *stream, qd_connection_t *connection)
 {
+    qd_message_content_t *content = MSG_CONTENT(stream);
+    content->uct_producer_connection = connection;
 }
 
 
 qd_connection_t *qd_message_get_producer_connection(const qd_message_t *stream)
 {
-    return 0;
+    qd_message_content_t *content = MSG_CONTENT(stream);
+    return content->uct_producer_connection;
 }
