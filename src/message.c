@@ -1135,6 +1135,18 @@ void qd_message_free(qd_message_t *in_msg)
         sys_atomic_destroy(&content->priority_parsed);
         sys_atomic_destroy(&content->receive_complete);
         sys_atomic_destroy(&content->ref_count);
+
+        //
+        // If unicast/cut-through was enabled, clean up the related state and buffers
+        //
+        if (content->uct_enabled) {
+            sys_atomic_destroy(&content->uct_produce_slot);
+            sys_atomic_destroy(&content->uct_consume_slot);
+            for (int i = 0; i < UCT_SLOT_COUNT; i++) {
+                qd_buffer_list_free_buffers(&content->uct_slots[i]);
+            }
+        }
+
         free_qd_message_content_t(content);
     }
 
@@ -3004,9 +3016,17 @@ void qd_message_clear_q2_unblocked_handler(qd_message_t *msg)
 void qd_message_start_unicast_cutthrough(qd_message_t *stream)
 {
     qd_message_content_t *content = MSG_CONTENT(stream);
-    sys_atomic_init(&content->uct_produce_slot, 0);
-    sys_atomic_init(&content->uct_consume_slot, 0);
-    content->uct_enabled = true;
+    sys_mutex_lock(&content->lock);
+    if (!content->uct_enabled) {
+        sys_atomic_init(&content->uct_produce_slot, 0);
+        sys_atomic_init(&content->uct_consume_slot, 0);
+        content->uct_enabled = true;
+
+        //
+        // TODO - If there are body octets in buffers, move those bytes/buffers into the cut-through ring.
+        //
+    }
+    sys_mutex_unlock(&content->lock);
 }
 
 

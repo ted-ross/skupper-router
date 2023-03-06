@@ -18,6 +18,7 @@
  */
 
 #include <qpid/dispatch/ctools.h>
+#include <qpid/dispatch/amqp.h>
 #include <qpid/dispatch/enum.h>
 #include <qpid/dispatch/alloc_pool.h>
 #include <qpid/dispatch/io_module.h>
@@ -97,14 +98,14 @@ typedef enum {
     LSIDE_FLOW,
     CSIDE_INITIAL,
     CSIDE_RAW_CONNECTION_OPENING,
-    CSIDE_STREAM_START,
+    CSIDE_LINK_SETUP,
     CSIDE_FLOW
 } tcplite_connection_state_t;
 ENUM_DECLARE(tcplite_connection_state);
 
 static const char *state_names[] =
 { "LSIDE_INITIAL", "LSIDE_LINK_SETUP", "LSIDE_STREAM_START", "LSIDE_FLOW",
-  "CSIDE_INITIAL", "CSIDE_RAW_CONNECTION_OPENING", "CSIDE_STREAM_START", "CSIDE_FLOW"
+  "CSIDE_INITIAL", "CSIDE_RAW_CONNECTION_OPENING", "CSIDE_LINK_SETUP", "CSIDE_FLOW"
 };
 ENUM_DEFINE(tcplite_connection_state, state_names);
 
@@ -435,6 +436,18 @@ static void link_setup_LSIDE_IO(tcplite_connection_t *conn)
 }
 
 
+static void link_setup_CSIDE_IO(tcplite_connection_t *conn)
+{
+    tcplite_connector_t *cr = (tcplite_connector_t*) conn->common.parent;
+    qdr_terminus_t *target = qdr_terminus(0);
+
+    qdr_terminus_set_address(target, conn->reply_to);
+
+    conn->server_link = qdr_link_first_attach(cr->conn, QD_INCOMING, qdr_terminus(0), target, "tcp.cside.in", 0, true, 0, &conn->server_link_id);
+    qdr_link_set_context(conn->server_link, conn);
+}
+
+
 static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *conn)
 {
     tcplite_listener_t  *li = (tcplite_listener_t*) conn->common.parent;
@@ -443,6 +456,12 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
     //
     // The lock is used here to protect access to the reply_to field.  This field is written
     // by an IO thread associated with the core connection, not this raw connection.
+    //
+    // The content-type value of "application/octet-stream" is used to signal to the network that
+    // the body of this stream will be a completely unstructured octet stream, without even an
+    // application-data performative.  The octets directly following the application-properties
+    // (or properties if there are no application-properties) section will constitute the stream
+    // and will consist solely of AMQP transport frames.
     //
     sys_mutex_lock(&conn->common.lock);
     if (!!conn->reply_to) {
@@ -453,8 +472,8 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
         qd_compose_insert_string(props, li->adaptor_config.address);  // to
         qd_compose_insert_null(props);                                // subject
         qd_compose_insert_string(props, conn->reply_to);              // reply-to
-        //qd_compose_insert_null(props);                              // correlation-id
-        //qd_compose_insert_null(props);                              // content-type
+        vflow_serialize_identity(conn->common.vflow, props);          // correlation-id
+        qd_compose_insert_string(props, QD_CONTENT_TYPE_APP_OCTETS);  // content-type
         //qd_compose_insert_null(props);                              // content-encoding
         //qd_compose_insert_timestamp(props, 0);                      // absolute-expiry-time
         //qd_compose_insert_timestamp(props, 0);                      // creation-time
@@ -471,15 +490,6 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
 
     conn->client_stream = qd_message();
     qd_message_set_streaming_annotation(conn->client_stream);
-
-    //
-    // Add the application properties
-    //
-    props = qd_compose(QD_PERFORMATIVE_APPLICATION_PROPERTIES, props);
-    qd_compose_start_map(props);
-    qd_compose_insert_symbol(props, QD_AP_FLOW_ID);
-    vflow_serialize_identity(conn->common.vflow, props);
-    qd_compose_end_map(props);
 
     qd_message_compose_2(conn->client_stream, props, false);
     qd_compose_free(props);
@@ -506,46 +516,71 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
 }
 
 
+static void compose_and_send_server_stream_CSIDE_IO(tcplite_connection_t *conn)
+{
+    qd_composed_field_t *props = 0;
+
+    //
+    // The lock is used here to protect access to the reply_to field.  This field is written
+    // by an IO thread associated with the core connection, not this raw connection.
+    //
+    // The content-type value of "application/octet-stream" is used to signal to the network that
+    // the body of this stream will be a completely unstructured octet stream, without even an
+    // application-data performative.  The octets directly following the application-properties
+    // (or properties if there are no application-properties) section will constitute the stream
+    // and will consist solely of AMQP transport frames.
+    //
+    props = qd_compose(QD_PERFORMATIVE_PROPERTIES, 0);
+    qd_compose_start_list(props);
+    qd_compose_insert_null(props);                                // message-id
+    qd_compose_insert_null(props);                                // user-id
+    qd_compose_insert_string(props, conn->reply_to);              // to
+    qd_compose_insert_null(props);                                // subject
+    qd_compose_insert_null(props);                                // reply-to
+    qd_compose_insert_null(props);                                // correlation-id
+    qd_compose_insert_string(props, QD_CONTENT_TYPE_APP_OCTETS);  // content-type
+    //qd_compose_insert_null(props);                              // content-encoding
+    //qd_compose_insert_timestamp(props, 0);                      // absolute-expiry-time
+    //qd_compose_insert_timestamp(props, 0);                      // creation-time
+    //qd_compose_insert_null(props);                              // group-id
+    //qd_compose_insert_uint(props, 0);                           // group-sequence
+    //qd_compose_insert_null(props);                              // reply-to-group-id
+    qd_compose_end_list(props);
+
+    conn->server_stream = qd_message();
+    qd_message_set_streaming_annotation(conn->server_stream);
+
+    qd_message_compose_2(conn->server_stream, props, false);
+    qd_compose_free(props);
+
+    //
+    // Start cut-through mode for this stream.
+    //
+    qd_message_start_unicast_cutthrough(conn->server_stream);
+
+    conn->server_delivery = qdr_link_deliver(conn->server_link, conn->server_stream, 0, false, 0, 0, 0, 0);
+    qdr_delivery_incref(conn->server_delivery, "TCP_CSIDE_IO");
+    qdr_delivery_set_context(conn->server_delivery, conn);
+
+    qd_log(tcplite_context->log_source, QD_LOG_DEBUG,
+            "[C%" PRIu64 "][L%" PRIu64 "] Initiating connector side empty server stream message",
+            conn->conn_id, conn->server_link_id);
+}
+
+
 static void extract_metadata_from_stream_CSIDE(tcplite_connection_t *conn)
 {
-    qd_iterator_t *f_iter  = qd_message_field_iterator(conn->client_stream, QD_FIELD_REPLY_TO);
-    qd_iterator_t *ap_iter = qd_message_field_iterator(conn->client_stream, QD_FIELD_APPLICATION_PROPERTIES);
+    qd_iterator_t *rt_iter = qd_message_field_iterator(conn->client_stream, QD_FIELD_REPLY_TO);
+    qd_iterator_t *ci_iter = qd_message_field_iterator(conn->client_stream, QD_FIELD_CORRELATION_ID);
 
-    if (!!f_iter) {
-        conn->reply_to = (char*) qd_iterator_copy(f_iter);
-        qd_iterator_free(f_iter);
+    if (!!rt_iter) {
+        conn->reply_to = (char*) qd_iterator_copy(rt_iter);
+        qd_iterator_free(rt_iter);
     }
 
-    if (!!ap_iter) {
-        qd_parsed_field_t *ap = qd_parse(ap_iter);
-
-        if (!!ap) {
-            do {
-                if (!qd_parse_ok(ap) || !qd_parse_is_map(ap)) {
-                    break;
-                }
-
-                uint32_t count = qd_parse_sub_count(ap);
-                qd_parsed_field_t *id_value = 0;
-                for (uint32_t i = 0; i < count; i++) {
-                    qd_parsed_field_t *key = qd_parse_sub_key(ap, i);
-                    if (key == 0) {
-                        break;
-                    }
-                    qd_iterator_t *key_iter = qd_parse_raw(key);
-                    if (!!key_iter && qd_iterator_equal(key_iter, (const unsigned char*) QD_AP_FLOW_ID)) {
-                        id_value = qd_parse_sub_value(ap, i);
-                    }
-                }
-
-                if (!!id_value) {
-                    vflow_set_ref_from_parsed(conn->common.vflow, VFLOW_ATTRIBUTE_COUNTERFLOW, id_value);
-                }
-            } while (false);
-            qd_parse_free(ap);
-        }
-
-        qd_iterator_free(ap_iter);
+    if (!!ci_iter) {
+        vflow_set_ref_from_iter(conn->common.vflow, VFLOW_ATTRIBUTE_COUNTERFLOW, ci_iter);
+        qd_iterator_free(ci_iter);
     }
 }
 
@@ -571,13 +606,13 @@ static void handle_incoming_delivery_CSIDE(tcplite_connector_t *cr, qdr_link_t *
     sys_atomic_init(&conn->client_disposition, 0);
     sys_atomic_init(&conn->server_disposition, 0);
 
-    extract_metadata_from_stream_CSIDE(conn);
-
-    qd_message_start_unicast_cutthrough(conn->client_stream);
-
     conn->common.vflow = vflow_start_record(VFLOW_RECORD_FLOW, cr->common.vflow);
     vflow_set_uint64(conn->common.vflow, VFLOW_ATTRIBUTE_OCTETS, 0);
     vflow_add_rate(conn->common.vflow, VFLOW_ATTRIBUTE_OCTETS, VFLOW_ATTRIBUTE_OCTET_RATE);
+
+    extract_metadata_from_stream_CSIDE(conn);
+
+    qd_message_start_unicast_cutthrough(conn->client_stream);
 
     conn->conn_id         = qd_server_allocate_connection_id(tcplite_context->server);
     conn->context.context = conn;
@@ -655,6 +690,20 @@ static bool manage_flow_LSIDE_IO(tcplite_connection_t *conn)
 }
 
 
+/**
+ * Manage the steady-state flow of a bi-directional connection from the connector-side point of view.
+ *
+ * @param conn Pointer to the TCP connection record
+ * @return true if IO processing should be repeated due to state changes
+ * @return false if IO processing should suspend until the next external event
+ */
+static bool manage_flow_CSIDE_IO(tcplite_connection_t *conn)
+{
+    printf("manage_flow_CSIDE_IO [C%"PRIu64"]\n", conn->conn_id);
+    return false;
+}
+
+
 static bool connection_run_LSIDE_IO(tcplite_connection_t *conn)
 {
     bool repeat = false;
@@ -701,33 +750,43 @@ static bool connection_run_CSIDE_IO(tcplite_connection_t *conn)
     bool repeat = false;
 
     switch (conn->state) {
-        case CSIDE_RAW_CONNECTION_OPENING:
-            if (!!conn->error && !!conn->client_delivery) {
-                //
-                // If there was an error during the connection-open, reject the client delivery.
-                //
-                qdr_delivery_remote_state_updated(tcplite_context->core, conn->client_delivery, PN_REJECTED, true, 0, false);
-                qdr_delivery_set_context(conn->client_delivery, 0);
-                qdr_delivery_decref(tcplite_context->core, conn->client_delivery, "connection_run_CSIDE_IO - setup failure");
-                qdr_link_detach(conn->client_link, QD_LOST, 0);
-                conn->client_delivery = 0;
-                conn->client_link     = 0;
-                conn->client_stream   = 0;
+    case CSIDE_RAW_CONNECTION_OPENING:
+        if (!!conn->error && !!conn->client_delivery) {
+            //
+            // If there was an error during the connection-open, reject the client delivery.
+            //
+            qdr_delivery_remote_state_updated(tcplite_context->core, conn->client_delivery, PN_REJECTED, true, 0, false);
+            qdr_delivery_set_context(conn->client_delivery, 0);
+            qdr_delivery_decref(tcplite_context->core, conn->client_delivery, "connection_run_CSIDE_IO - setup failure");
+            qdr_link_detach(conn->client_link, QD_LOST, 0);
+            conn->client_delivery = 0;
+            conn->client_link     = 0;
+            conn->client_stream   = 0;
 
-                free_connection_IO(conn);
-            }
-            break;
+            free_connection_IO(conn);
+        } else if (!pn_raw_connection_is_read_closed(conn->raw_conn)) {
+            link_setup_CSIDE_IO(conn);
+            set_state_IO(conn, CSIDE_LINK_SETUP);
+        }
+        break;
 
-        case CSIDE_STREAM_START:
-            break;
+    case CSIDE_LINK_SETUP:
+        compose_and_send_server_stream_CSIDE_IO(conn);
+        set_state_IO(conn, CSIDE_FLOW);
+        break;
 
-        case CSIDE_FLOW:
-            break;
+    case CSIDE_FLOW:
+        //
+        // Manage the ongoing bidirectional flow of the connection.
+        //
+        repeat = manage_flow_CSIDE_IO(conn);
+        break;
 
-        default:
-            assert(false);
-            break;
+    default:
+        assert(false);
+        break;
     }
+
     return repeat;
 }
 
@@ -823,6 +882,10 @@ static void CORE_first_attach(void               *context,
     qdr_terminus_set_address_iterator(local_source, qdr_terminus_get_address(target));
     qdr_terminus_set_address_iterator(local_target, qdr_terminus_get_address(source));
     qdr_link_second_attach(link, local_source, local_target);
+
+    if (qdr_link_direction(link) == QD_OUTGOING) {
+        qdr_link_flow(tcplite_context->core, link, 1, false);
+    }
 }
 
 
@@ -870,6 +933,11 @@ static void CORE_flow(void *context, qdr_link_t *link, int credit)
             // Start listening on the socket
             //
             qd_adaptor_listener_listen(li->adaptor_listener, on_accept, li);
+        }
+    } else if (common->context_type == TL_CONNECTION) {
+        tcplite_connection_t *conn = (tcplite_connection_t*) common;
+        if (qdr_link_direction(link) == QD_OUTGOING && credit > 0) {
+            pn_raw_connection_wake(conn->raw_conn);
         }
     }
 }
