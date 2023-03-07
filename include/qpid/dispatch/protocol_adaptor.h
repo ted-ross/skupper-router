@@ -695,6 +695,15 @@ bool qdr_link_strip_annotations_out(const qdr_link_t *link);
 void qdr_link_stalled_outbound(qdr_link_t *link);
 
 /**
+ * qdr_link_set_user_streaming
+ *
+ * Allow this link to carry streaming messages without getting involved with the connection's
+ * streaming-link pool.  This allows protocol adaptors to "manually" create streaming links.
+ * This function will typically be invoked right after qdr_link_first_attach.
+ */
+void qdr_link_set_user_streaming(qdr_link_t *link);
+
+/**
  * qdr_link_name
  *
  * Retrieve the name of the link.
