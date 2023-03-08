@@ -354,7 +354,7 @@ static void free_connection_IO(tcplite_connection_t *conn)
     }
 
     if (!!conn->inbound_delivery) {
-        qdr_delivery_remote_state_updated(tcplite_context->core, conn->inbound_delivery, 0, true, 0, false);
+        qdr_delivery_remote_state_updated(tcplite_context->core, conn->inbound_delivery, PN_MODIFIED, true, 0, false);
         qdr_delivery_set_context(conn->inbound_delivery, 0);
         qdr_delivery_decref(tcplite_context->core, conn->inbound_delivery, "free_connection_IO - inbound_delivery");
     }
@@ -364,7 +364,7 @@ static void free_connection_IO(tcplite_connection_t *conn)
     }
 
     if (!!conn->outbound_delivery) {
-        qdr_delivery_remote_state_updated(tcplite_context->core, conn->outbound_delivery, 0, true, 0, false);
+        qdr_delivery_remote_state_updated(tcplite_context->core, conn->outbound_delivery, PN_MODIFIED, true, 0, false);
         qdr_delivery_set_context(conn->outbound_delivery, 0);
         qdr_delivery_decref(tcplite_context->core, conn->outbound_delivery, "free_connection_IO - outbound_delivery");
     }
@@ -900,6 +900,10 @@ static void on_connection_event_CSIDE_IO(pn_event_t *e, qd_server_t *qd_server, 
 
     if (pn_event_type(e) == PN_RAW_CONNECTION_DISCONNECTED) {
         conn->error = pn_raw_connection_condition(conn->raw_conn);
+        if (conn->state == CSIDE_FLOW || conn->state == CSIDE_LINK_SETUP) {
+            free_connection_IO(conn);
+            return;
+        }
     }
 
     bool run = true;
