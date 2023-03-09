@@ -436,6 +436,7 @@ static bool produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_mess
         while ((count = pn_raw_connection_take_read_buffers(raw_conn, raw_buffers, RAW_BUFFER_BATCH_SIZE))) {
             for (size_t i = 0; i < count; i++) {
                 qd_buffer_t *buf = (qd_buffer_t*) raw_buffers[i].context;
+                qd_buffer_insert(buf, raw_buffers[i].size);
                 if (qd_buffer_size(buf) > 0) {
                     DEQ_INSERT_TAIL(qd_buffers, buf);
                 } else {
@@ -447,6 +448,11 @@ static bool produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_mess
         if (!DEQ_IS_EMPTY(qd_buffers)) {
             printf("produce_read_buffers_XSIDE_IO - Producing %ld buffers\n", DEQ_SIZE(qd_buffers));
             qd_message_produce_buffers(stream, &qd_buffers);
+
+            //
+            // TODO - Activate the consuming connection.
+            //
+
             return true;
         }
     }
@@ -460,6 +466,7 @@ static void consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_mes
     size_t limit = pn_raw_connection_write_buffers_capacity(raw_conn);
 
     if (limit > 0) {
+        bool was_blocked = !qd_message_can_produce_buffers(stream);
         qd_buffer_list_t buffers = DEQ_EMPTY;
         size_t actual = qd_message_consume_buffers(stream, &buffers, limit);
         assert(actual == DEQ_SIZE(buffers));
@@ -475,6 +482,12 @@ static void consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_mes
         }
         printf("consume_write_buffers_XSIDE_IO - Consuming %ld buffers\n", actual);
         pn_raw_connection_write_buffers(raw_conn, raw_buffers, actual);
+
+        if (was_blocked && qd_message_can_produce_buffers(stream)) {
+            //
+            // TODO - Activate the producing connection
+            //
+        }
     }
 }
 
@@ -565,8 +578,11 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
     //
     vflow_latency_start(conn->common.vflow);
 
+    //
+    // The delivery comes with a ref-count to protect the returned value.  Inherit that ref-count as the
+    // protection of our held pointer.
+    //
     conn->inbound_delivery = qdr_link_deliver(conn->inbound_link, conn->inbound_stream, 0, false, 0, 0, 0, 0);
-    qdr_delivery_incref(conn->inbound_delivery, "TCP_LSIDE_IO");
     qdr_delivery_set_context(conn->inbound_delivery, conn);
 
     qd_log(tcplite_context->log_source, QD_LOG_DEBUG,
@@ -619,8 +635,11 @@ static void compose_and_send_server_stream_CSIDE_IO(tcplite_connection_t *conn)
     //
     qd_message_start_unicast_cutthrough(conn->inbound_stream);
 
+    //
+    // The delivery comes with a ref-count to protect the returned value.  Inherit that ref-count as the
+    // protection of our held pointer.
+    //
     conn->inbound_delivery = qdr_link_deliver(conn->inbound_link, conn->inbound_stream, 0, false, 0, 0, 0, 0);
-    qdr_delivery_incref(conn->inbound_delivery, "TCP_CSIDE_IO");
     qdr_delivery_set_context(conn->inbound_delivery, conn);
 
     qd_log(tcplite_context->log_source, QD_LOG_DEBUG,

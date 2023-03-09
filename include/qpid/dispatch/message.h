@@ -630,7 +630,7 @@ void qd_message_start_unicast_cutthrough(qd_message_t *stream);
 bool qd_message_is_unicast_cutthrough(const qd_message_t *stream);
 
 /**
- * Indicate whether there is capacity to procude buffers into the stream.
+ * Indicate whether there is capacity to produce buffers into the stream.
  *
  * @param stream Pointer to the message
  * @return true Yes, there is capacity to produce buffers
