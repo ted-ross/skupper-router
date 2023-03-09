@@ -152,12 +152,14 @@ typedef struct {
     sys_atomic_t         priority;                       // Message AMQP priority
     sys_atomic_t         aborted;                        // Message has been aborted
 
-    bool                 uct_enabled;
-    qd_buffer_list_t     uct_slots[UCT_SLOT_COUNT];
-    sys_atomic_t         uct_produce_slot;
-    sys_atomic_t         uct_consume_slot;
-    qd_connection_t     *uct_producer_connection;
-    qd_connection_t     *uct_consumer_connection;
+    bool                          uct_enabled;
+    qd_buffer_list_t              uct_slots[UCT_SLOT_COUNT];
+    sys_atomic_t                  uct_produce_slot;
+    sys_atomic_t                  uct_consume_slot;
+    void                         *uct_producer_activation;
+    void                         *uct_consumer_activation;
+    qd_message_activation_type_t  uct_producer_activation_type;
+    qd_message_activation_type_t  uct_consumer_activation_type;
 } qd_message_content_t;
 
 struct qd_message_pvt_t {

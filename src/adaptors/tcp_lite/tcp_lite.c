@@ -400,6 +400,22 @@ static void free_connection_IO(tcplite_connection_t *conn)
 }
 
 
+static void activate_peer_connection(void *activation_handle, qd_message_activation_type_t activation_type)
+{
+    switch (activation_type) {
+    case QD_ACTIVATION_NONE:
+        break;
+
+    case QD_ACTIVATION_AMQP:
+        break;
+
+    case QD_ACTIVATION_RAW:
+        pn_raw_connection_wake((pn_raw_connection_t*) activation_handle);
+        break;
+    }
+}
+
+
 static void set_state_IO(tcplite_connection_t *conn, tcplite_connection_state_t new_state)
 {
     qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] State change %s -> %s",
@@ -450,8 +466,12 @@ static bool produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_mess
             qd_message_produce_buffers(stream, &qd_buffers);
 
             //
-            // TODO - Activate the consuming connection.
+            // Activate the consuming connection.
             //
+            void                         *activation_handle;
+            qd_message_activation_type_t  activation_type;
+            qd_message_get_consumer_activation(stream, &activation_handle, &activation_type);
+            activate_peer_connection(activation_handle, activation_type);
 
             return true;
         }
@@ -485,8 +505,12 @@ static void consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_mes
 
         if (was_blocked && qd_message_can_produce_buffers(stream)) {
             //
-            // TODO - Activate the producing connection
+            // Activate the producing connection
             //
+            void                         *activation_handle;
+            qd_message_activation_type_t  activation_type;
+            qd_message_get_producer_activation(stream, &activation_handle, &activation_type);
+            activate_peer_connection(activation_handle, activation_type);
         }
     }
 }
@@ -572,6 +596,7 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
     // Start cut-through mode for this stream.
     //
     qd_message_start_unicast_cutthrough(conn->inbound_stream);
+    qd_message_set_producer_activation(conn->inbound_stream, conn->raw_conn, QD_ACTIVATION_RAW);
 
     //
     // Start latency timer for this cross-van connection.
@@ -634,6 +659,7 @@ static void compose_and_send_server_stream_CSIDE_IO(tcplite_connection_t *conn)
     // Start cut-through mode for this stream.
     //
     qd_message_start_unicast_cutthrough(conn->inbound_stream);
+    qd_message_set_producer_activation(conn->inbound_stream, conn->raw_conn, QD_ACTIVATION_RAW);
 
     //
     // The delivery comes with a ref-count to protect the returned value.  Inherit that ref-count as the
@@ -674,6 +700,8 @@ static void handle_outbound_delivery_LSIDE(tcplite_connection_t *conn, qdr_link_
         qdr_delivery_incref(delivery, "handle_outbound_delivery_LSIDE");
         conn->outbound_delivery = delivery;
         conn->outbound_stream   = qdr_delivery_message(delivery);
+        qd_message_start_unicast_cutthrough(conn->outbound_stream);
+        qd_message_set_consumer_activation(conn->outbound_stream, conn->raw_conn, QD_ACTIVATION_RAW);
     }
     sys_mutex_unlock(&conn->common.lock);
 
@@ -704,6 +732,7 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
     conn->outbound_delivery = delivery;
     conn->outbound_link     = link;
     conn->outbound_stream   = qdr_delivery_message(delivery);
+
     sys_mutex_init(&conn->common.lock);
     sys_atomic_init(&conn->inbound_disposition, 0);
     sys_atomic_init(&conn->outbound_disposition, 0);
@@ -712,8 +741,6 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
     vflow_set_uint64(conn->common.vflow, VFLOW_ATTRIBUTE_OCTETS, 0);
 
     extract_metadata_from_stream_CSIDE(conn);
-
-    qd_message_start_unicast_cutthrough(conn->outbound_stream);
 
     conn->conn_id         = qd_server_allocate_connection_id(tcplite_context->server);
     conn->context.context = conn;
@@ -725,6 +752,9 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
 
     conn->raw_conn = pn_raw_connection();
     pn_raw_connection_set_context(conn->raw_conn, &conn->context);
+
+    qd_message_start_unicast_cutthrough(conn->outbound_stream);
+    qd_message_set_consumer_activation(conn->outbound_stream, conn->raw_conn, QD_ACTIVATION_RAW);
 
     //
     // The raw connection establishment must be the last thing done in this function.
@@ -813,10 +843,11 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         consume_write_buffers_XSIDE_IO(conn->raw_conn, conn->outbound_stream);
 
         //
-        // Check the outbound stream for completion.  If complete, write-close the raw connection
-        // TODO - do this only if we have consumed all of the stream buffers
+        // Check the outbound stream for completion.  If complete, write-close the raw connection.
+        // Note that this is not done if there are stream buffers yet to consume.  Wait until all of the
+        // payload has been consumed and written before write-closing the connection.
         //
-        if (qd_message_receive_complete(conn->outbound_stream)) {
+        if (qd_message_receive_complete(conn->outbound_stream) && !qd_message_can_consume_buffers(conn->outbound_stream)) {
             printf("    write-closing the raw connection\n");
             pn_raw_connection_write_close(conn->raw_conn);
             qdr_delivery_set_disposition(conn->outbound_delivery, PN_ACCEPTED);
@@ -905,6 +936,7 @@ static bool connection_run_CSIDE_IO(tcplite_connection_t *conn)
         if (credit) {
             compose_and_send_server_stream_CSIDE_IO(conn);
             set_state_IO(conn, CSIDE_FLOW);
+            repeat = true;
         }
         break;
 

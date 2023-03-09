@@ -639,6 +639,15 @@ bool qd_message_is_unicast_cutthrough(const qd_message_t *stream);
 bool qd_message_can_produce_buffers(const qd_message_t *stream);
 
 /**
+ * Indicate whether there are buffers to consume from the stream.
+ *
+ * @param stream Pointer to the message
+ * @return true Yes, there are buffers to consume
+ * @return false No, there are no buffers to consumer
+ */
+bool qd_message_can_consume_buffers(const qd_message_t *stream);
+
+/**
  * Produce a list of buffers into the message stream.  The pn_message_can_produce_buffers must be
  * called prior to calling this function to determine whether there is capacity to produce a list
  * of buffers into the stream.  If there is no capacity, this function must not be called.
@@ -660,13 +669,19 @@ void qd_message_produce_buffers(qd_message_t *stream, qd_buffer_list_t *buffers)
  */
 int qd_message_consume_buffers(qd_message_t *stream, qd_buffer_list_t *buffers, int limit);
 
+typedef enum {
+    QD_ACTIVATION_NONE = 0,
+    QD_ACTIVATION_AMQP,
+    QD_ACTIVATION_RAW
+} qd_message_activation_type_t;
+
 /**
  * Tell the message stream which connection is consuming its buffers.
  *
  * @param stream Pointer to the message
  * @param connection Pointer to the qd_connection that is consuming this stream's buffers
  */
-void qd_message_set_consumer_connection(qd_message_t *stream, qd_connection_t *connection);
+void qd_message_set_consumer_activation(qd_message_t *stream, void *handle, qd_message_activation_type_t activation_type);
 
 /**
  * Return the connection that is consuming this message stream's buffers.
@@ -674,23 +689,23 @@ void qd_message_set_consumer_connection(qd_message_t *stream, qd_connection_t *c
  * @param stream Pointer to the message
  * @return qd_connection_t* Pointer to the connection that is consuming buffers from this stream
  */
-qd_connection_t *qd_message_get_consumer_connection(const qd_message_t *stream);
+void qd_message_get_consumer_activation(const qd_message_t *stream, void **handle, qd_message_activation_type_t *activation_type);
 
 /**
  * Tell the message stream which connection is producing its buffers.
  *
  * @param stream Pointer to the message
- * @param connection Pointer to the qd_connection that is producing this stream's buffers
+ * @param connection Pointer to the qd_connection that is consuming this stream's buffers
  */
-void qd_message_set_producer_connection(qd_message_t *stream, qd_connection_t *connection);
+void qd_message_set_producer_activation(qd_message_t *stream, void *handle, qd_message_activation_type_t activation_type);
 
 /**
  * Return the connection that is producing this message stream's buffers.
  *
  * @param stream Pointer to the message
- * @return qd_connection_t* Pointer to the connection that is producing buffers to this stream
+ * @return qd_connection_t* Pointer to the connection that is consuming buffers from this stream
  */
-qd_connection_t *qd_message_get_producer_connection(const qd_message_t *stream);
+void qd_message_get_producer_activation(const qd_message_t *stream, void **handle, qd_message_activation_type_t *activation_type);
 
 
 ///@}
