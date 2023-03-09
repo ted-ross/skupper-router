@@ -1321,11 +1321,25 @@ static void ADAPTOR_init(qdr_core_t *core, void **adaptor_context)
 static void ADAPTOR_final(void *adaptor_context)
 {
     while (DEQ_HEAD(tcplite_context->connectors)) {
-        qd_dispatch_delete_tcp_connector(tcplite_context->qd, DEQ_HEAD(tcplite_context->connectors));
+        tcplite_connector_t  *cr   = DEQ_HEAD(tcplite_context->connectors);
+        tcplite_connection_t *conn = DEQ_HEAD(cr->connections);
+        while (conn) {
+            free_connection_IO(conn);
+            conn = DEQ_HEAD(cr->connections);
+        }
+        qd_dispatch_delete_tcp_connector(tcplite_context->qd, cr);
     }
+
     while (DEQ_HEAD(tcplite_context->listeners)) {
-        qd_dispatch_delete_tcp_listener(tcplite_context->qd, DEQ_HEAD(tcplite_context->listeners));
+        tcplite_listener_t   *li   = DEQ_HEAD(tcplite_context->listeners);
+        tcplite_connection_t *conn = DEQ_HEAD(li->connections);
+        while (conn) {
+            free_connection_IO(conn);
+            conn = DEQ_HEAD(li->connections);
+        }
+        qd_dispatch_delete_tcp_listener(tcplite_context->qd, li);
     }
+
     qdr_protocol_adaptor_free(tcplite_context->core, tcplite_context->pa);
     sys_mutex_free(&tcplite_context->lock);
     free(tcplite_context);
