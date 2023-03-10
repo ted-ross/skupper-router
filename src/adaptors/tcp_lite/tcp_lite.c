@@ -136,6 +136,8 @@ typedef struct tcplite_connection_t {
     qdr_delivery_t             *outbound_delivery;    // protected by lock
     sys_atomic_t                outbound_disposition;
     uint64_t                    outbound_link_id;
+    uint64_t                    inbound_octets;
+    uint64_t                    outbound_octets;
     pn_condition_t             *error;
     char                       *reply_to;             // protected by lock (LSIDE only)
     uint64_t                    conn_id;
@@ -143,6 +145,8 @@ typedef struct tcplite_connection_t {
     tcplite_connection_state_t  state;
     bool                        listener_side;
     bool                        inbound_credit;       // protected by lock
+    bool                        inbound_first_octet;
+    bool                        outbound_first_octet;
 } tcplite_connection_t;
 
 ALLOC_DEFINE(tcplite_connection_t);
@@ -382,6 +386,8 @@ static void free_connection_IO(tcplite_connection_t *conn)
 
     qd_timer_free(conn->common.activate_timer);
     sys_mutex_free(&conn->common.lock);
+
+    vflow_set_uint64(conn->common.vflow, VFLOW_ATTRIBUTE_OCTETS, conn->inbound_octets);
     vflow_end_record(conn->common.vflow);
 
     if (!!conn->common.parent && conn->common.parent->context_type == TL_LISTENER) {
@@ -442,8 +448,10 @@ static void grant_read_buffers_IO(pn_raw_connection_t *raw_conn, const size_t co
 }
 
 
-static bool produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_message_t *stream)
+static uint64_t produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_message_t *stream)
 {
+    uint64_t octet_count = 0;
+
     if (qd_message_can_produce_buffers(stream)) {
         qd_buffer_list_t qd_buffers = DEQ_EMPTY;
         pn_raw_buffer_t  raw_buffers[RAW_BUFFER_BATCH_SIZE];
@@ -453,6 +461,7 @@ static bool produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_mess
             for (size_t i = 0; i < count; i++) {
                 qd_buffer_t *buf = (qd_buffer_t*) raw_buffers[i].context;
                 qd_buffer_insert(buf, raw_buffers[i].size);
+                octet_count += raw_buffers[i].size;
                 if (qd_buffer_size(buf) > 0) {
                     DEQ_INSERT_TAIL(qd_buffers, buf);
                 } else {
@@ -472,18 +481,17 @@ static bool produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_mess
             qd_message_activation_type_t  activation_type;
             qd_message_get_consumer_activation(stream, &activation_handle, &activation_type);
             activate_peer_connection(activation_handle, activation_type);
-
-            return true;
         }
     }
 
-    return false;
+    return octet_count;
 }
 
 
-static void consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_message_t *stream)
+static uint64_t consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_message_t *stream)
 {
-    size_t limit = pn_raw_connection_write_buffers_capacity(raw_conn);
+    size_t   limit       = pn_raw_connection_write_buffers_capacity(raw_conn);
+    uint64_t octet_count = 0;
 
     if (limit > 0) {
         bool was_blocked = !qd_message_can_produce_buffers(stream);
@@ -498,6 +506,7 @@ static void consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_mes
             raw_buffers[i].capacity = qd_buffer_capacity(buf);
             raw_buffers[i].size     = qd_buffer_size(buf);
             raw_buffers[i].offset   = 0;
+            octet_count += raw_buffers[i].size;
             buf = DEQ_NEXT(buf);
         }
         printf("consume_write_buffers_XSIDE_IO - Consuming %ld buffers\n", actual);
@@ -513,6 +522,8 @@ static void consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_mes
             activate_peer_connection(activation_handle, activation_type);
         }
     }
+
+    return octet_count;
 }
 
 
@@ -597,11 +608,6 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
     //
     qd_message_start_unicast_cutthrough(conn->inbound_stream);
     qd_message_set_producer_activation(conn->inbound_stream, conn->raw_conn, QD_ACTIVATION_RAW);
-
-    //
-    // Start latency timer for this cross-van connection.
-    //
-    vflow_latency_start(conn->common.vflow);
 
     //
     // The delivery comes with a ref-count to protect the returned value.  Inherit that ref-count as the
@@ -820,7 +826,20 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         //
         // Produce available read buffers into the inbound stream
         //
-        produce_read_buffers_XSIDE_IO(conn->raw_conn, conn->inbound_stream);
+        uint64_t octet_count = produce_read_buffers_XSIDE_IO(conn->raw_conn, conn->inbound_stream);
+        conn->inbound_octets += octet_count;
+
+        //
+        // Manage latency measurements
+        //
+        if (!conn->inbound_first_octet && octet_count > 0) {
+            conn->inbound_first_octet = true;
+            if (conn->listener_side) {
+                vflow_latency_start(conn->common.vflow);
+            } else {
+                vflow_latency_end(conn->common.vflow);
+            }
+        }
 
         //
         // Issue read buffers when the client stream is producible and the raw connection has capacity for read buffers
@@ -840,7 +859,20 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         //
         // Consume available write buffers from the outbound stream
         //
-        consume_write_buffers_XSIDE_IO(conn->raw_conn, conn->outbound_stream);
+        uint64_t octet_count = consume_write_buffers_XSIDE_IO(conn->raw_conn, conn->outbound_stream);
+        conn->outbound_octets += octet_count;
+
+        //
+        // Manage latency measurements
+        //
+        if (!conn->outbound_first_octet && octet_count > 0) {
+            conn->outbound_first_octet = true;
+            if (conn->listener_side) {
+                vflow_latency_end(conn->common.vflow);
+            } else {
+                vflow_latency_start(conn->common.vflow);
+            }
+        }
 
         //
         // Check the outbound stream for completion.  If complete, write-close the raw connection.
