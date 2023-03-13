@@ -1291,6 +1291,14 @@ QD_EXPORT void qd_dispatch_delete_tcp_listener(qd_dispatch_t *qd, void *impl)
         DEQ_REMOVE(tcplite_context->listeners, li);
         sys_mutex_unlock(&tcplite_context->lock);
 
+        tcplite_connection_t *conn = DEQ_HEAD(li->connections);
+        while (conn) {
+            free_connection_IO(conn);
+            conn = DEQ_HEAD(li->connections);
+        }
+
+        vflow_end_record(li->common.vflow);
+
         qd_log(tcplite_context->log_source, QD_LOG_INFO,
                "Deleted TcpListener for %s, %s:%s",
                li->adaptor_config.address, li->adaptor_config.host, li->adaptor_config.port);
@@ -1341,6 +1349,14 @@ QD_EXPORT void qd_dispatch_delete_tcp_connector(qd_dispatch_t *qd, void *impl)
         sys_mutex_lock(&tcplite_context->lock);
         DEQ_REMOVE(tcplite_context->connectors, cr);
         sys_mutex_unlock(&tcplite_context->lock);
+
+        tcplite_connection_t *conn = DEQ_HEAD(cr->connections);
+        while (conn) {
+            free_connection_IO(conn);
+            conn = DEQ_HEAD(cr->connections);
+        }
+
+        vflow_end_record(cr->common.vflow);
 
         qd_log(tcplite_context->log_source, QD_LOG_INFO,
                "Deleted TcpConnector for %s, %s:%s",
@@ -1393,22 +1409,12 @@ static void ADAPTOR_init(qdr_core_t *core, void **adaptor_context)
 static void ADAPTOR_final(void *adaptor_context)
 {
     while (DEQ_HEAD(tcplite_context->connectors)) {
-        tcplite_connector_t  *cr   = DEQ_HEAD(tcplite_context->connectors);
-        tcplite_connection_t *conn = DEQ_HEAD(cr->connections);
-        while (conn) {
-            free_connection_IO(conn);
-            conn = DEQ_HEAD(cr->connections);
-        }
+        tcplite_connector_t *cr   = DEQ_HEAD(tcplite_context->connectors);
         qd_dispatch_delete_tcp_connector(tcplite_context->qd, cr);
     }
 
     while (DEQ_HEAD(tcplite_context->listeners)) {
-        tcplite_listener_t   *li   = DEQ_HEAD(tcplite_context->listeners);
-        tcplite_connection_t *conn = DEQ_HEAD(li->connections);
-        while (conn) {
-            free_connection_IO(conn);
-            conn = DEQ_HEAD(li->connections);
-        }
+        tcplite_listener_t *li   = DEQ_HEAD(tcplite_context->listeners);
         qd_dispatch_delete_tcp_listener(tcplite_context->qd, li);
     }
 
