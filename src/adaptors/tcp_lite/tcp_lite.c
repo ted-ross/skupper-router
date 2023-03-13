@@ -72,6 +72,7 @@ struct tcplite_listener_t {
     qdr_link_t                *in_link;
     qd_adaptor_listener_t     *adaptor_listener;
     tcplite_connection_list_t  connections;
+    uint64_t                   conn_count;
 };
 
 ALLOC_DEFINE(tcplite_listener_t);
@@ -86,6 +87,7 @@ typedef struct tcplite_connector_t {
     uint64_t                   link_id;
     qdr_link_t                *out_link;
     tcplite_connection_list_t  connections;
+    uint64_t                   conn_count;
 } tcplite_connector_t;
 
 ALLOC_DEFINE(tcplite_connector_t);
@@ -278,7 +280,13 @@ static void TL_setup_listener(tcplite_listener_t *li)
     // Create a vflow record for this listener
     //
     li->common.vflow = vflow_start_record(VFLOW_RECORD_LISTENER, 0);
-    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_PROTOCOL, "tcp");
+    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_PROTOCOL,         "tcp");
+    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_NAME,             li->adaptor_config.name);
+    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_DESTINATION_HOST, li->adaptor_config.host);
+    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_DESTINATION_PORT, li->adaptor_config.port);
+    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_VAN_ADDRESS,      li->adaptor_config.address);
+    vflow_set_uint64(li->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4,    0);
+    vflow_add_rate(li->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4, VFLOW_ATTRIBUTE_FLOW_RATE_L4);
 }
 
 
@@ -301,7 +309,13 @@ static void TL_setup_connector(tcplite_connector_t *cr)
     // Create a vflow record for this connector
     //
     cr->common.vflow = vflow_start_record(VFLOW_RECORD_CONNECTOR, 0);
-    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_PROTOCOL, "tcp");
+    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_PROTOCOL,         "tcp");
+    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_NAME,             cr->adaptor_config.name);
+    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_DESTINATION_HOST, cr->adaptor_config.host);
+    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_DESTINATION_PORT, cr->adaptor_config.port);
+    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_VAN_ADDRESS,      cr->adaptor_config.address);
+    vflow_set_uint64(cr->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4,    0);
+    vflow_add_rate(cr->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4, VFLOW_ATTRIBUTE_FLOW_RATE_L4);
 
     cr->out_link = qdr_link_first_attach(cr->conn, QD_OUTGOING, source, 0, "tcp.connector.out", 0, false, 0, &cr->link_id);
     qdr_link_set_context(cr->out_link, cr);
@@ -322,8 +336,6 @@ static void drain_read_buffers_IO(pn_raw_connection_t *raw_conn)
             drained++;
         }
     }
-
-    printf("drain_read_buffers_IO  %ld buffers\n", drained);
 }
 
 
@@ -340,15 +352,11 @@ static void drain_write_buffers_IO(pn_raw_connection_t *raw_conn)
             drained++;
         }
     }
-
-    printf("drain_write_buffers_IO  %ld buffers\n", drained);
 }
 
 
 static void free_connection_IO(tcplite_connection_t *conn)
 {
-    printf("free_connection_IO - %cSIDE\n", conn->listener_side ? 'L' : 'C');
-
     free(conn->reply_to);
     if (!!conn->raw_conn) {
         drain_read_buffers_IO(conn->raw_conn);
@@ -443,7 +451,7 @@ static void grant_read_buffers_IO(pn_raw_connection_t *raw_conn, const size_t co
         raw_buffers[i].size     = 0;
     }
 
-    printf("grant_read_buffers_IO - %ld\n", count);
+    qd_log(tcplite_context->log_source, QD_LOG_TRACE, "grant_read_buffers_IO - %ld", count);
     pn_raw_connection_give_read_buffers(raw_conn, raw_buffers, count);
 }
 
@@ -471,7 +479,7 @@ static uint64_t produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_
         }
 
         if (!DEQ_IS_EMPTY(qd_buffers)) {
-            printf("produce_read_buffers_XSIDE_IO - Producing %ld buffers\n", DEQ_SIZE(qd_buffers));
+            qd_log(tcplite_context->log_source, QD_LOG_TRACE, "produce_read_buffers_XSIDE_IO - Producing %ld buffers", DEQ_SIZE(qd_buffers));
             qd_message_produce_buffers(stream, &qd_buffers);
 
             //
@@ -509,7 +517,7 @@ static uint64_t consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd
             octet_count += raw_buffers[i].size;
             buf = DEQ_NEXT(buf);
         }
-        printf("consume_write_buffers_XSIDE_IO - Consuming %ld buffers\n", actual);
+        qd_log(tcplite_context->log_source, QD_LOG_TRACE, "consume_write_buffers_XSIDE_IO - Consuming %ld buffers", actual);
         pn_raw_connection_write_buffers(raw_conn, raw_buffers, actual);
 
         if (was_blocked && qd_message_can_produce_buffers(stream)) {
@@ -699,8 +707,6 @@ static void extract_metadata_from_stream_CSIDE(tcplite_connection_t *conn)
 
 static void handle_outbound_delivery_LSIDE(tcplite_connection_t *conn, qdr_link_t *link, qdr_delivery_t *delivery)
 {
-    printf("handle_outbound_delivery_LSIDE\n");
-
     sys_mutex_lock(&conn->common.lock);
     if (!conn->outbound_delivery) {
         qdr_delivery_incref(delivery, "handle_outbound_delivery_LSIDE");
@@ -721,7 +727,6 @@ static void handle_outbound_delivery_LSIDE(tcplite_connection_t *conn, qdr_link_
  */
 static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_link_t *link, qdr_delivery_t *delivery)
 {
-    printf("handle_first_outbound_delivery_CSIDE\n");
     assert(!qdr_delivery_get_context(delivery));
 
     tcplite_connection_t *conn = new_tcplite_connection_t();
@@ -754,6 +759,8 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
 
     sys_mutex_lock(&cr->common.lock);
     DEQ_INSERT_TAIL(cr->connections, conn);
+    cr->conn_count++;
+    vflow_set_uint64(cr->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4, cr->conn_count);
     sys_mutex_unlock(&cr->common.lock);
 
     conn->raw_conn = pn_raw_connection();
@@ -778,7 +785,6 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
 static void handle_outbound_delivery_CSIDE(tcplite_connection_t *conn, qdr_link_t *link, qdr_delivery_t *delivery, bool settled)
 {
     if (qd_message_receive_complete(conn->outbound_stream) && !pn_raw_connection_is_write_closed(conn->raw_conn)) {
-        printf("handle_outbound_delivery_CSIDE - wake raw_conn for write-close\n");
         pn_raw_connection_wake(conn->raw_conn);
     }
 }
@@ -793,15 +799,13 @@ static void handle_outbound_delivery_CSIDE(tcplite_connection_t *conn, qdr_link_
  */
 static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
 {
-    printf("manage_flow_XSIDE_IO [C%"PRIu64"] - %cSIDE\n", conn->conn_id, conn->listener_side ? 'L' : 'C');
-
     if (!!conn->inbound_stream && !!conn->raw_conn) {
         //
         // If the raw connection is read-closed, settle and complete the inbound stream/delivery
         // and close out the inbound half of the connection.
         //
         if (pn_raw_connection_is_read_closed(conn->raw_conn) && !!conn->inbound_stream) {
-            printf("    read-closed - complete inbound delivery\n");
+            qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] Read-closed - complete inbound delivery", conn->conn_id);
             qd_message_set_receive_complete(conn->inbound_stream);
             qdr_delivery_continue(tcplite_context->core, conn->inbound_delivery, true);
             qdr_delivery_decref(tcplite_context->core, conn->inbound_delivery, "TCP_LSIDE_IO - read-close");
@@ -815,7 +819,7 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         // the outbound side.  Close the raw connection.
         //
         if (sys_atomic_get(&conn->inbound_disposition) != 0) {
-            printf("    raw connection error - close inbound delivery\n");
+            qd_log(tcplite_context->log_source, QD_LOG_INFO, "[C%"PRIu64"] Raw connection error (%cSIDE) - closing inbound delivery", conn->conn_id, conn->listener_side ? 'L' : 'C');
             pn_raw_connection_close(conn->raw_conn);
             qdr_delivery_decref(tcplite_context->core, conn->inbound_delivery, "TCP_LSIDE_IO - delivery error");
             conn->inbound_delivery = 0;
@@ -880,7 +884,7 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         // payload has been consumed and written before write-closing the connection.
         //
         if (qd_message_receive_complete(conn->outbound_stream) && !qd_message_can_consume_buffers(conn->outbound_stream)) {
-            printf("    write-closing the raw connection\n");
+            qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] Write-closing the raw connection", conn->conn_id);
             pn_raw_connection_write_close(conn->raw_conn);
             qdr_delivery_set_disposition(conn->outbound_delivery, PN_ACCEPTED);
             qdr_delivery_decref(tcplite_context->core, conn->outbound_delivery, "manage_flow_XSIDE_IO - release outbound");
@@ -994,7 +998,7 @@ static bool connection_run_CSIDE_IO(tcplite_connection_t *conn)
 static void on_connection_event_LSIDE_IO(pn_event_t *e, qd_server_t *qd_server, void *context)
 {
     tcplite_connection_t *conn = (tcplite_connection_t*) context;
-    printf("on_connection_event_LSIDE_IO: %s\n", pn_event_type_name(pn_event_type(e)));
+    qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] on_connection_event_LSIDE_IO: %s", conn->conn_id, pn_event_type_name(pn_event_type(e)));
 
     if (pn_event_type(e) == PN_RAW_CONNECTION_DISCONNECTED) {
         free_connection_IO(conn);
@@ -1011,10 +1015,23 @@ static void on_connection_event_LSIDE_IO(pn_event_t *e, qd_server_t *qd_server, 
 static void on_connection_event_CSIDE_IO(pn_event_t *e, qd_server_t *qd_server, void *context)
 {
     tcplite_connection_t *conn = (tcplite_connection_t*) context;
-    printf("on_connection_event_CSIDE_IO: %s\n", pn_event_type_name(pn_event_type(e)));
+    qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] on_connection_event_CSIDE_IO: %s", conn->conn_id, pn_event_type_name(pn_event_type(e)));
 
     if (pn_event_type(e) == PN_RAW_CONNECTION_DISCONNECTED) {
         conn->error = pn_raw_connection_condition(conn->raw_conn);
+        
+        if (!!conn->error) {
+            const char *cname = pn_condition_get_name(conn->error);
+            const char *cdesc = pn_condition_get_description(conn->error);
+
+            if (!!cname) {
+                vflow_set_string(conn->common.vflow, VFLOW_ATTRIBUTE_RESULT, cname);
+            }
+            if (!!cdesc) {
+                vflow_set_string(conn->common.vflow, VFLOW_ATTRIBUTE_REASON, cdesc);
+            }
+        }
+        
         if (conn->state == CSIDE_FLOW || conn->state == CSIDE_LINK_SETUP) {
             free_connection_IO(conn);
             return;
@@ -1030,7 +1047,6 @@ static void on_connection_event_CSIDE_IO(pn_event_t *e, qd_server_t *qd_server, 
 
 void on_accept(qd_adaptor_listener_t *listener, pn_listener_t *pn_listener, void *context)
 {
-    printf("on_accept\n");
     tcplite_listener_t *li = (tcplite_listener_t*) context;
 
     tcplite_connection_t *conn = new_tcplite_connection_t();
@@ -1054,6 +1070,8 @@ void on_accept(qd_adaptor_listener_t *listener, pn_listener_t *pn_listener, void
 
     sys_mutex_lock(&li->common.lock);
     DEQ_INSERT_TAIL(li->connections, conn);
+    li->conn_count++;
+    vflow_set_uint64(li->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4, li->conn_count);
     sys_mutex_unlock(&li->common.lock);
 
     conn->raw_conn = pn_raw_connection();
@@ -1078,7 +1096,6 @@ static void CORE_first_attach(void               *context,
                               qdr_terminus_t     *target,
                               qd_session_class_t  ssn_class)
 {
-    printf("CORE_first_attach\n");
     tcplite_common_t *common = (tcplite_common_t*) qdr_connection_get_context(conn);
     qdr_link_set_context(link, common);
 
@@ -1100,7 +1117,6 @@ static void CORE_second_attach(void           *context,
                                qdr_terminus_t *source,
                                qdr_terminus_t *target)
 {
-    printf("CORE_second_attach\n");
     tcplite_common_t *common = (tcplite_common_t*) qdr_link_get_context(link);
 
     if (common->context_type == TL_CONNECTION) {
@@ -1118,13 +1134,11 @@ static void CORE_second_attach(void           *context,
 
 static void CORE_detach(void *context, qdr_link_t *link, qdr_error_t *error, bool first, bool close)
 {
-    printf("CORE_detach\n");
 }
 
 
 static void CORE_flow(void *context, qdr_link_t *link, int credit)
 {
-    printf("CORE_flow credit=%d\n", credit);
     tcplite_common_t *common = (tcplite_common_t*) qdr_link_get_context(link);
 
     if (common->context_type == TL_LISTENER) {
@@ -1175,10 +1189,6 @@ static int CORE_push(void *context, qdr_link_t *link, int limit)
 
 static uint64_t CORE_deliver_outbound(void *context, qdr_link_t *link, qdr_delivery_t *delivery, bool settled)
 {
-    printf("CORE_deliver_outbound - dlv: %lx settled: %s completed: %s\n",
-           (long) delivery, settled ? "true" : "false",
-           qd_message_receive_complete(qdr_delivery_message(delivery)) ? "true" : "false");
-
     tcplite_common_t *common = (tcplite_common_t*) qdr_delivery_get_context(delivery);
     if (!common) {
         common = (tcplite_common_t*) qdr_link_get_context(link);
@@ -1209,8 +1219,6 @@ static int CORE_get_credit(void *context, qdr_link_t *link)
 
 static void CORE_delivery_update(void *context, qdr_delivery_t *dlv, uint64_t disp, bool settled)
 {
-    printf("CORE_delivery_update - disp: 0x%"PRIx64" settled: %s\n", disp, settled ? "true" : "false");
-
     bool              need_wake = false;
     tcplite_common_t *common = (tcplite_common_t*) qdr_delivery_get_context(dlv);
     if (!!common && common->context_type == TL_CONNECTION && settled) {
