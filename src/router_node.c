@@ -312,12 +312,22 @@ static void qd_router_connection_get_config(const qd_connection_t  *conn,
 }
 
 
-static int AMQP_writable_conn_handler(void *type_context, qd_connection_t *conn, void *context)
+static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, void *context)
 {
     qdr_connection_t *qconn = (qdr_connection_t*) qd_connection_get_context(conn);
 
-    if (qconn)
+    if (CLEAR_ATOMIC_FLAG(&conn->wake_core) && !!qconn) {
         return qdr_connection_process(qconn);
+    }
+
+    if (CLEAR_ATOMIC_FLAG(&conn->wake_cutthrough_outbound)) {
+        // TODO - Run outgoing cut-through processing
+    }
+
+    if (CLEAR_ATOMIC_FLAG(&conn->wake_cutthrough_inbound)) {
+        // TODO - Run incoming cut-through processing
+    }
+
     return 0;
 }
 
@@ -1560,7 +1570,7 @@ static qd_node_type_t router_node = {"router", 0, 0,
                                      AMQP_disposition_handler,
                                      AMQP_incoming_link_handler,
                                      AMQP_outgoing_link_handler,
-                                     AMQP_writable_conn_handler,
+                                     AMQP_conn_wake_handler,
                                      AMQP_link_detach_handler,
                                      AMQP_link_attach_handler,
                                      qd_link_abandoned_deliveries_handler,
@@ -1650,9 +1660,13 @@ static void CORE_connection_activate(void *context, qdr_connection_t *conn)
     // IMPORTANT:  This is the only core callback that is invoked on the core
     //             thread itself. It must not take locks that could deadlock the core.
     //
-    sys_mutex_lock(qd_server_get_activation_lock(router->qd->server));
-    qd_server_activate((qd_connection_t*) qdr_connection_get_context(conn));
-    sys_mutex_unlock(qd_server_get_activation_lock(router->qd->server));
+    qd_connection_t *ctx = (qd_connection_t*) qdr_connection_get_context(conn);
+
+    if (!!ctx && !SET_ATOMIC_FLAG(&ctx->wake_core)) {
+        sys_mutex_lock(qd_server_get_activation_lock(router->qd->server));
+        qd_server_activate(ctx);
+        sys_mutex_unlock(qd_server_get_activation_lock(router->qd->server));
+    }
 }
 
 

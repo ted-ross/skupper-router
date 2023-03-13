@@ -414,13 +414,16 @@ static void free_connection_IO(tcplite_connection_t *conn)
 }
 
 
-static void activate_peer_connection(void *activation_handle, qd_message_activation_type_t activation_type)
+static void activate_peer_connection(void *activation_handle, qd_message_activation_type_t activation_type, qd_direction_t dir)
 {
     switch (activation_type) {
     case QD_ACTIVATION_NONE:
         break;
 
     case QD_ACTIVATION_AMQP:
+        sys_mutex_lock(qd_server_get_activation_lock(tcplite_context->server));
+        qd_server_activate_cutthrough((qd_connection_t*) activation_handle, dir == QD_INCOMING);
+        sys_mutex_unlock(qd_server_get_activation_lock(tcplite_context->server));
         break;
 
     case QD_ACTIVATION_RAW:
@@ -488,7 +491,7 @@ static uint64_t produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_
             void                         *activation_handle;
             qd_message_activation_type_t  activation_type;
             qd_message_get_consumer_activation(stream, &activation_handle, &activation_type);
-            activate_peer_connection(activation_handle, activation_type);
+            activate_peer_connection(activation_handle, activation_type, QD_OUTGOING);
         }
     }
 
@@ -506,19 +509,21 @@ static uint64_t consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd
         qd_buffer_list_t buffers = DEQ_EMPTY;
         size_t actual = qd_message_consume_buffers(stream, &buffers, limit);
         assert(actual == DEQ_SIZE(buffers));
-        pn_raw_buffer_t raw_buffers[actual];
-        qd_buffer_t *buf = DEQ_HEAD(buffers);
-        for (size_t i = 0; i < actual; i++) {
-            raw_buffers[i].context  = (uintptr_t) buf;
-            raw_buffers[i].bytes    = (char*) qd_buffer_base(buf);
-            raw_buffers[i].capacity = qd_buffer_capacity(buf);
-            raw_buffers[i].size     = qd_buffer_size(buf);
-            raw_buffers[i].offset   = 0;
-            octet_count += raw_buffers[i].size;
-            buf = DEQ_NEXT(buf);
+        if (actual > 0) {
+            pn_raw_buffer_t raw_buffers[actual];
+            qd_buffer_t *buf = DEQ_HEAD(buffers);
+            for (size_t i = 0; i < actual; i++) {
+                raw_buffers[i].context  = (uintptr_t) buf;
+                raw_buffers[i].bytes    = (char*) qd_buffer_base(buf);
+                raw_buffers[i].capacity = qd_buffer_capacity(buf);
+                raw_buffers[i].size     = qd_buffer_size(buf);
+                raw_buffers[i].offset   = 0;
+                octet_count += raw_buffers[i].size;
+                buf = DEQ_NEXT(buf);
+            }
+            qd_log(tcplite_context->log_source, QD_LOG_TRACE, "consume_write_buffers_XSIDE_IO - Consuming %ld buffers", actual);
+            pn_raw_connection_write_buffers(raw_conn, raw_buffers, actual);
         }
-        qd_log(tcplite_context->log_source, QD_LOG_TRACE, "consume_write_buffers_XSIDE_IO - Consuming %ld buffers", actual);
-        pn_raw_connection_write_buffers(raw_conn, raw_buffers, actual);
 
         if (was_blocked && qd_message_can_produce_buffers(stream)) {
             //
@@ -527,7 +532,7 @@ static uint64_t consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd
             void                         *activation_handle;
             qd_message_activation_type_t  activation_type;
             qd_message_get_producer_activation(stream, &activation_handle, &activation_type);
-            activate_peer_connection(activation_handle, activation_type);
+            activate_peer_connection(activation_handle, activation_type, QD_INCOMING);
         }
     }
 

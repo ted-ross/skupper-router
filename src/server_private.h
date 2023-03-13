@@ -193,6 +193,9 @@ struct qd_connection_t {
     bool                            strip_annotations_in;
     bool                            strip_annotations_out;
     void (*wake)(qd_connection_t*); /* Wake method, different for libwebsockets vs. proactor */
+    sys_atomic_t                    wake_core;
+    sys_atomic_t                    wake_cutthrough_outbound;
+    sys_atomic_t                    wake_cutthrough_inbound;
     char rhost[NI_MAXHOST];     /* Remote host numeric IP for incoming connections */
     char rhost_port[NI_MAXHOST+NI_MAXSERV]; /* Remote host:port for incoming connections */
 };
