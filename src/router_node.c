@@ -21,6 +21,7 @@
 #include "dispatch_private.h"
 #include "policy.h"
 #include "router_private.h"
+#include "qd_connection.h"
 
 #include "qpid/dispatch.h"
 #include "qpid/dispatch/protocol_adaptor.h"

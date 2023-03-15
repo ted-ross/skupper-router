@@ -28,6 +28,7 @@
 #include "policy.h"
 #include "server_private.h"
 #include "timer_private.h"
+#include "qd_connection.h"
 
 #include "qpid/dispatch/alloc.h"
 #include "qpid/dispatch/amqp.h"
