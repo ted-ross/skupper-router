@@ -83,11 +83,11 @@ struct qd_connection_t {
     bool                            strip_annotations_in;
     bool                            strip_annotations_out;
     void (*wake)(qd_connection_t*); /* Wake method, different for libwebsockets vs. proactor */
-    sys_atomic_t                    wake_core;
-    sys_atomic_t                    wake_cutthrough_outbound;
-    sys_atomic_t                    wake_cutthrough_inbound;
-    qdr_delivery_ref_list_t         inbound_cutthrough_deliveries;
-    qdr_delivery_ref_list_t         outbound_cutthrough_deliveries;
+    sys_atomic_t                    wake_core;                      // Atomic flag to indicate that core actions are due at next activation
+    sys_atomic_t                    wake_cutthrough_outbound;       // Outbound cut-through actions are due at next activation
+    sys_atomic_t                    wake_cutthrough_inbound;        // Inbound cut-through actions are due at next activation
+    qdr_delivery_ref_list_t         inbound_cutthrough_deliveries;  // List of outbound deliveries using cut-through
+    qdr_delivery_ref_list_t         outbound_cutthrough_deliveries; // List of inbound deliveries using cut-through
     char rhost[NI_MAXHOST];     /* Remote host numeric IP for incoming connections */
     char rhost_port[NI_MAXHOST+NI_MAXSERV]; /* Remote host:port for incoming connections */
 };

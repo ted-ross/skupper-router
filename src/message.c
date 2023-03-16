@@ -1820,6 +1820,11 @@ void qd_message_send(qd_message_t *in_msg,
 
     qd_buffer_t *buf = msg->cursor.buffer;
 
+    //
+    // TODO - If this is a cut-through message, send the remaining buffer content via the link and then
+    // switch over to cut-through buffer processing.
+    //
+
     qd_message_q2_unblocker_t  q2_unblock = {0};
     pn_session_t              *pns        = pn_link_session(pnl);
     const size_t               q3_upper   = QD_BUFFER_SIZE * QD_QLIMIT_Q3_UPPER;
