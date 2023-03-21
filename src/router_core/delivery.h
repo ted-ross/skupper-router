@@ -40,6 +40,7 @@ struct qdr_delivery_t {
     qdr_link_t_sp           original_link_sp; /// Safe pointer to original link if this delivery was moved (via initial-delivery)
     qdr_delivery_t         *peer;          /// Use this peer if the delivery has one and only one peer.
     qdr_delivery_ref_t     *next_peer_ref;
+    qdr_delivery_ref_t     *cutthrough_list_ref;
     qd_message_t           *msg;
     qd_iterator_t          *to_addr;
     qd_iterator_t          *origin;

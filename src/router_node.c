@@ -315,14 +315,41 @@ static void qd_router_connection_get_config(const qd_connection_t  *conn,
 
 static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, void *context)
 {
-    qdr_connection_t *qconn = (qdr_connection_t*) qd_connection_get_context(conn);
+    qdr_connection_t *qconn  = (qdr_connection_t*) qd_connection_get_context(conn);
+    qd_router_t      *router = (qd_router_t*) type_context;
 
     if (CLEAR_ATOMIC_FLAG(&conn->wake_core) && !!qconn) {
         return qdr_connection_process(qconn);
     }
 
     if (CLEAR_ATOMIC_FLAG(&conn->wake_cutthrough_outbound)) {
-        // TODO - Run outgoing cut-through processing
+        //
+        // Run outgoing cut-through processing
+        //
+        // TODO - Consider not always starting at the HEAD.  This would improve fairness in cases
+        // where Q3 stalls occur.
+        //
+        bool q3_stalled = false;
+        qdr_delivery_ref_t *dref = DEQ_HEAD(conn->outbound_cutthrough_deliveries);
+        while (!q3_stalled && !!dref) {
+            qdr_delivery_ref_t *next_dref = DEQ_NEXT(dref);
+            qd_link_t    *qlink = (qd_link_t*) qdr_link_get_context(qdr_delivery_link(dref->dlv));
+            qd_message_t *msg   = qdr_delivery_message(dref->dlv);
+            qd_message_send(msg, qlink, 0, &q3_stalled);
+
+            if (q3_stalled) {
+                qd_link_q3_block(qlink);
+            }
+
+            if (qd_message_send_complete(msg)) {
+                DEQ_REMOVE(conn->outbound_cutthrough_deliveries, dref);
+                dref->dlv->cutthrough_list_ref = 0;
+                qdr_delivery_decref(router->router_core, dref->dlv, "AMQP_conn_wake_handler - removed send-complete from outgoing_cutthrough_deliveries");
+                free_qdr_delivery_ref_t(dref);
+            }
+
+            dref = next_dref;
+        }
     }
 
     if (CLEAR_ATOMIC_FLAG(&conn->wake_cutthrough_inbound)) {
@@ -992,6 +1019,7 @@ static int AMQP_link_flow_handler(void* context, qd_link_t *link)
             const size_t q3_lower = QD_BUFFER_SIZE * QD_QLIMIT_Q3_LOWER;
             if (pn_session_outgoing_bytes(pn_ssn) < q3_lower) {
                 // yes.  We must now unblock all links that have been blocked by Q3
+
                 qd_link_list_t *blinks = qd_session_q3_blocked_links(qd_ssn);
                 qd_link_t *blink = DEQ_HEAD(*blinks);
                 while (blink) {
@@ -1006,6 +1034,10 @@ static int AMQP_link_flow_handler(void* context, qd_link_t *link)
                     }
                     blink = DEQ_HEAD(*blinks);
                 }
+
+                //
+                // TODO - wake the connection for outgoing cut-through
+                //
             }
         }
     }
@@ -1976,6 +2008,17 @@ static uint64_t CORE_link_deliver(void *context, qdr_link_t *link, qdr_delivery_
         // edge routers do not propagate self in trace or ingress RA
         : router->router_mode == QD_ROUTER_MODE_EDGE ? (QD_MESSAGE_RA_STRIP_INGRESS | QD_MESSAGE_RA_STRIP_TRACE)
         : QD_MESSAGE_RA_STRIP_NONE;
+
+    //
+    // If this message content has cut-through enabled, record the delivery in the connection's list of outgoing cut-through streams
+    //
+    if (!dlv->cutthrough_list_ref && qd_message_is_unicast_cutthrough(msg_out)) {
+        dlv->cutthrough_list_ref = new_qdr_delivery_ref_t();
+        ZERO(dlv->cutthrough_list_ref);
+        dlv->cutthrough_list_ref->dlv = dlv;
+        DEQ_INSERT_TAIL(qconn->outbound_cutthrough_deliveries, dlv->cutthrough_list_ref);
+        qdr_delivery_incref(dlv, "CORE_link_deliver - Added to outbound_cutthrough_deliveries");
+    }
 
     qd_message_send(msg_out, qlink, ra_flags, &q3_stalled);
 

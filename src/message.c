@@ -1757,6 +1757,38 @@ uint32_t _compose_router_annotations(qd_message_pvt_t *msg, unsigned int ra_flag
 }
 
 
+static void qd_message_send_cut_through(qd_message_pvt_t *msg, qd_message_content_t *content, pn_link_t *pnl, pn_session_t *pns, bool *q3_stalled)
+{
+    const size_t q3_upper = QD_BUFFER_SIZE * QD_QLIMIT_Q3_UPPER;
+
+    while (!*q3_stalled && (sys_atomic_get(&content->uct_consume_slot) - sys_atomic_get(&content->uct_produce_slot)) % UCT_SLOT_COUNT != 0) {
+        uint32_t use_slot = sys_atomic_get(&content->uct_consume_slot);
+
+        qd_buffer_t *buf = DEQ_HEAD(content->uct_slots[use_slot]);
+        while (!!buf) {
+            DEQ_REMOVE_HEAD(content->uct_slots[use_slot]);
+            if (!IS_ATOMIC_FLAG_SET(&content->aborted)) {
+                pn_link_send(pnl, (char*) qd_buffer_base(buf), qd_buffer_size(buf));
+            }
+            qd_buffer_free(buf);
+            buf = DEQ_HEAD(content->uct_slots[use_slot]);
+        }
+
+        sys_atomic_set(&content->uct_consume_slot, (use_slot + 1) % UCT_SLOT_COUNT);
+        *q3_stalled = !IS_ATOMIC_FLAG_SET(&content->aborted) && (pn_session_outgoing_bytes(pns) >= q3_upper);
+    }
+
+    if ((IS_ATOMIC_FLAG_SET(&content->aborted) || IS_ATOMIC_FLAG_SET(&content->receive_complete))
+        && sys_atomic_get(&content->uct_consume_slot) == sys_atomic_get(&content->uct_produce_slot)) {
+        //
+        // The stream is aborted or receive complete (no new content expected) AND we have consumed
+        // all of the buffered content.  Mark the message as send-complete.
+        //
+        SET_ATOMIC_FLAG(&msg->send_complete);
+    }
+}
+
+
 void qd_message_send(qd_message_t *in_msg,
                      qd_link_t    *link,
                      unsigned int  ra_flags,
@@ -1765,8 +1797,17 @@ void qd_message_send(qd_message_t *in_msg,
     qd_message_pvt_t     *msg     = (qd_message_pvt_t*) in_msg;
     qd_message_content_t *content = msg->content;
     pn_link_t            *pnl     = qd_link_pn(link);
+    pn_session_t         *pns     = pn_link_session(pnl);
 
     *q3_stalled                   = false;
+
+    if (content->uct_started) {
+        //
+        // Perform the cut-through transfer from the message content to the outbound link
+        //
+        qd_message_send_cut_through(msg, content, pnl, pns, q3_stalled);
+        return;
+    }
 
     if (!msg->ra_sent) {
 
@@ -1820,13 +1861,7 @@ void qd_message_send(qd_message_t *in_msg,
 
     qd_buffer_t *buf = msg->cursor.buffer;
 
-    //
-    // TODO - If this is a cut-through message, send the remaining buffer content via the link and then
-    // switch over to cut-through buffer processing.
-    //
-
     qd_message_q2_unblocker_t  q2_unblock = {0};
-    pn_session_t              *pns        = pn_link_session(pnl);
     const size_t               q3_upper   = QD_BUFFER_SIZE * QD_QLIMIT_Q3_UPPER;
 
     while (!IS_ATOMIC_FLAG_SET(&content->aborted)
@@ -1934,7 +1969,12 @@ void qd_message_send(qd_message_t *in_msg,
         }
     }
 
-    *q3_stalled = (pn_session_outgoing_bytes(pns) >= q3_upper);
+    if (content->uct_enabled && !IS_ATOMIC_FLAG_SET(&content->receive_complete) && !msg->cursor.cursor) {
+        content->uct_started = true;
+        qd_message_send_cut_through(msg, content, pnl, pns, q3_stalled);
+    } else {
+        *q3_stalled = (pn_session_outgoing_bytes(pns) >= q3_upper);
+    }
 }
 
 
