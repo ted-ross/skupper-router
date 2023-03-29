@@ -333,8 +333,8 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
         qdr_delivery_ref_t *dref = DEQ_HEAD(conn->outbound_cutthrough_deliveries);
         while (!q3_stalled && !!dref) {
             qdr_delivery_ref_t *next_dref = DEQ_NEXT(dref);
-            qd_link_t    *qlink = (qd_link_t*) qdr_link_get_context(qdr_delivery_link(dref->dlv));
-            qd_message_t *msg   = qdr_delivery_message(dref->dlv);
+            qd_link_t          *qlink     = (qd_link_t*) qdr_link_get_context(qdr_delivery_link(dref->dlv));
+            qd_message_t       *msg       = qdr_delivery_message(dref->dlv);
             qd_message_send(msg, qlink, 0, &q3_stalled);
 
             if (q3_stalled) {
@@ -344,7 +344,7 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
             if (qd_message_send_complete(msg)) {
                 DEQ_REMOVE(conn->outbound_cutthrough_deliveries, dref);
                 dref->dlv->cutthrough_list_ref = 0;
-                qdr_delivery_decref(router->router_core, dref->dlv, "AMQP_conn_wake_handler - removed send-complete from outgoing_cutthrough_deliveries");
+                qdr_delivery_decref(router->router_core, dref->dlv, "AMQP_conn_wake_handler - removed send-complete from outbound_cutthrough_deliveries");
                 free_qdr_delivery_ref_t(dref);
             }
 
@@ -353,7 +353,24 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
     }
 
     if (CLEAR_ATOMIC_FLAG(&conn->wake_cutthrough_inbound)) {
-        // TODO - Run incoming cut-through processing
+        //
+        // Run incoming cut-through processing
+        //
+        qdr_delivery_ref_t *dref = DEQ_HEAD(conn->inbound_cutthrough_deliveries);
+        while (!!dref) {
+            qdr_delivery_ref_t *next_dref = DEQ_NEXT(dref);
+            qd_message_t       *msg       = qdr_delivery_message(dref->dlv);
+            qd_message_receive(qdr_node_delivery_pn_from_qdr(dref->dlv));
+
+            if (qd_message_receive_complete(msg)) {
+                DEQ_REMOVE(conn->inbound_cutthrough_deliveries, dref);
+                dref->dlv->cutthrough_list_ref = 0;
+                qdr_delivery_decref(router->router_core, dref->dlv, "AMQP_conn_wake_handler - removed receive-complete from inbound_cutthrough_deliveries");
+                free_qdr_delivery_ref_t(dref);
+            }
+
+            dref = next_dref;
+        }
     }
 
     return 0;

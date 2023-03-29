@@ -72,6 +72,7 @@ typedef enum {
     QD_DEPTH_MESSAGE_ANNOTATIONS,
     QD_DEPTH_PROPERTIES,
     QD_DEPTH_APPLICATION_PROPERTIES,
+    QD_DEPTH_RAW_BODY,
     QD_DEPTH_BODY,
     QD_DEPTH_ALL
 } qd_message_depth_t;
@@ -275,6 +276,27 @@ qd_iterator_t *qd_message_field_iterator(qd_message_t *msg, qd_message_field_t f
 
 ssize_t qd_message_field_length(qd_message_t *msg, qd_message_field_t field);
 ssize_t qd_message_field_copy(qd_message_t *msg, qd_message_field_t field, char *buffer, size_t *hdr_length);
+
+/**
+ * Return the buffer and offset of the beginning of the raw body section.  Return NULL if there is no
+ * raw body.
+ *
+ * Side effect: Atomically enable cut-through on this stream so there is no race-condition between
+ *              the producer and consumer.
+ *
+ * @param msg A pointer to a stream
+ * @param buf [out] pointer to the buffer containing the first octet of the raw body (or 0)
+ * @param offset [out] The offset in the buffer to the first octet of the raw body
+ */
+void qd_message_raw_body_and_start_cutthrough(qd_message_t *msg, qd_buffer_t **buf, size_t *offset);
+
+/**
+ * This is called when the raw body has been completely consumed by a cut-through consumer.
+ * In this function, the function _should_ free any buffers that purely contain body content.
+ *
+ * @param msg A pointer to a stream
+ */
+void qd_message_release_raw_body(qd_message_t *msg);
 
 // Create a message using composed fields to supply content.
 //

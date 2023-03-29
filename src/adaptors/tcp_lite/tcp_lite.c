@@ -140,6 +140,7 @@ typedef struct tcplite_connection_t {
     uint64_t                    outbound_link_id;
     uint64_t                    inbound_octets;
     uint64_t                    outbound_octets;
+    qd_buffer_t                *outbound_body;
     pn_condition_t             *error;
     char                       *reply_to;             // protected by lock (LSIDE only)
     uint64_t                    conn_id;
@@ -149,6 +150,7 @@ typedef struct tcplite_connection_t {
     bool                        inbound_credit;       // protected by lock
     bool                        inbound_first_octet;
     bool                        outbound_first_octet;
+    bool                        outbound_body_complete;
 } tcplite_connection_t;
 
 ALLOC_DEFINE(tcplite_connection_t);
@@ -348,7 +350,9 @@ static void drain_write_buffers_IO(pn_raw_connection_t *raw_conn)
     while ((count = pn_raw_connection_take_written_buffers(raw_conn, raw_buffers, RAW_BUFFER_BATCH_SIZE))) {
         for (size_t i = 0; i < count; i++) {
             qd_buffer_t *buf = (qd_buffer_t*) raw_buffers[i].context;
-            qd_buffer_free(buf);
+            if (!!buf) {
+                qd_buffer_free(buf);
+            }
             drained++;
         }
     }
@@ -540,6 +544,70 @@ static uint64_t consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd
 }
 
 
+static uint64_t consume_message_body_XSIDE_IO(tcplite_connection_t *conn, qd_message_t *stream)
+{
+    assert(!conn->outbound_body_complete);
+
+    uint64_t octets = 0;
+    size_t   offset = 0;
+
+    if (!conn->outbound_body) {
+        qd_message_depth_status_t depth_status = qd_message_check_depth(stream, QD_DEPTH_RAW_BODY);
+        switch (depth_status) {
+        case QD_MESSAGE_DEPTH_INVALID:
+            //
+            // TODO - Handle corrupt message formats
+            //
+            break;
+
+        case QD_MESSAGE_DEPTH_OK:
+            //
+            // If we have complete headers, get the pointer to the buffer containing the first
+            // octet of the body and the offset to that octet.  If there are no body octets, we
+            // will be given a NULL pointer.
+            //
+            qd_message_raw_body_and_start_cutthrough(stream, &conn->outbound_body, &offset);
+            break;
+
+        case QD_MESSAGE_DEPTH_INCOMPLETE:
+            //
+            // We don't have all of the header data for the stream.  Do nothing and wait for
+            // more stuff to arrive.
+            //
+            return 0;
+        }
+    }
+
+    //
+    // Process classic (non cut-though) body buffers until they are all sent onto the raw connection.
+    // Note that this may take multiple runs through this function if there is any back-pressure
+    // outbound on the raw connection.
+    //
+    // Note: There may be a non-zero offset only on the first body buffer.  It is assumed that 
+    //       every subsequent buffer will have an offset of 0.
+    //
+    while (!!conn->outbound_body && pn_raw_connection_write_buffers_capacity(conn->raw_conn) > 0) {
+        pn_raw_buffer_t raw_buffer;
+        raw_buffer.context  = 0;
+        raw_buffer.bytes    = (char*) qd_buffer_base(conn->outbound_body);
+        raw_buffer.capacity = qd_buffer_capacity(conn->outbound_body);
+        raw_buffer.size     = qd_buffer_size(conn->outbound_body) - offset;
+        raw_buffer.offset   = offset;
+        octets += raw_buffer.size;
+        pn_raw_connection_write_buffers(conn->raw_conn, &raw_buffer, 1);
+        conn->outbound_body = DEQ_NEXT(conn->outbound_body);
+        offset = 0;
+    }
+
+    if (!conn->outbound_body) {
+        conn->outbound_body_complete = true;
+        qd_message_release_raw_body(stream);
+    }
+
+    return octets;
+}
+
+
 static void link_setup_LSIDE_IO(tcplite_connection_t *conn)
 {
     tcplite_listener_t *li = (tcplite_listener_t*) conn->common.parent;
@@ -717,7 +785,11 @@ static void handle_outbound_delivery_LSIDE(tcplite_connection_t *conn, qdr_link_
         qdr_delivery_incref(delivery, "handle_outbound_delivery_LSIDE");
         conn->outbound_delivery = delivery;
         conn->outbound_stream   = qdr_delivery_message(delivery);
-        qd_message_start_unicast_cutthrough(conn->outbound_stream);
+
+        //
+        // Note that we do not start_unicast_cutthrough here.  This is done in a more orderly way during
+        // stream-content consumption.
+        //
         qd_message_set_consumer_activation(conn->outbound_stream, conn->raw_conn, QD_ACTIVATION_RAW);
     }
     sys_mutex_unlock(&conn->common.lock);
@@ -771,7 +843,11 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
     conn->raw_conn = pn_raw_connection();
     pn_raw_connection_set_context(conn->raw_conn, &conn->context);
 
-    qd_message_start_unicast_cutthrough(conn->outbound_stream);
+
+    //
+    // Note that we do not start_unicast_cutthrough here.  This is done in a more orderly way during
+    // stream-content consumption.
+    //
     qd_message_set_consumer_activation(conn->outbound_stream, conn->raw_conn, QD_ACTIVATION_RAW);
 
     //
@@ -804,6 +880,9 @@ static void handle_outbound_delivery_CSIDE(tcplite_connection_t *conn, qdr_link_
  */
 static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
 {
+    //
+    // Inbound stream (producer-side) processing
+    //
     if (!!conn->inbound_stream && !!conn->raw_conn) {
         //
         // If the raw connection is read-closed, settle and complete the inbound stream/delivery
@@ -859,6 +938,9 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         }
     }
 
+    //
+    // Outbound stream (consumer-side) processing
+    //
     if (!!conn->outbound_stream && !!conn->raw_conn) {
         //
         // Drain completed write buffers from the raw connection
@@ -866,15 +948,25 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         drain_write_buffers_IO(conn->raw_conn);
 
         //
+        // If this is the beginning of an outbound stream, send any body payload that is in the
+        // normal non-cut-through buffers of the message before switching to cut-through
+        //
+        if (!conn->outbound_body_complete) {
+            uint64_t body_octets = consume_message_body_XSIDE_IO(conn, conn->outbound_stream);
+            conn->outbound_octets += body_octets;
+        }
+
+        //
         // Consume available write buffers from the outbound stream
         //
-        uint64_t octet_count = consume_write_buffers_XSIDE_IO(conn->raw_conn, conn->outbound_stream);
-        conn->outbound_octets += octet_count;
+        if (conn->outbound_body_complete) {
+            conn->outbound_octets += consume_write_buffers_XSIDE_IO(conn->raw_conn, conn->outbound_stream);
+        }
 
         //
         // Manage latency measurements
         //
-        if (!conn->outbound_first_octet && octet_count > 0) {
+        if (!conn->outbound_first_octet && conn->outbound_octets > 0) {
             conn->outbound_first_octet = true;
             if (conn->listener_side) {
                 vflow_latency_end(conn->common.vflow);
