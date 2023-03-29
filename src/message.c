@@ -2187,25 +2187,6 @@ static qd_message_depth_status_t qd_message_check_LH(qd_message_content_t *conte
 
         // fallthrough
 
-    case QD_DEPTH_RAW_BODY:
-        //
-        // RAW_BODY - This is simply looking for raw octets following the properties sections
-        // The message depth is OK if the properties are complete.
-        //
-        content->section_raw_body.buffer     = content->parse_buffer;
-        content->section_raw_body.offset     = !!content->parse_buffer ? content->parse_cursor - qd_buffer_base(content->parse_buffer) : 0;
-        content->section_raw_body.length     = 0;
-        content->section_raw_body.hdr_length = 0;
-        content->section_raw_body.parsed     = true;
-        content->section_raw_body.tag        = 0;
-
-        content->parse_depth = QD_DEPTH_RAW_BODY;
-        if (depth == QD_DEPTH_RAW_BODY) {
-            break;
-        }
-
-        // fallthrough
-
     case QD_DEPTH_BODY:
         //
         // BODY (not optional, but proton allows it - see PROTON-2085)
@@ -2231,6 +2212,25 @@ static qd_message_depth_status_t qd_message_check_LH(qd_message_content_t *conte
 
         if (rc != QD_MESSAGE_DEPTH_OK || depth == QD_DEPTH_BODY)
             break;
+
+        // fallthrough
+
+    case QD_DEPTH_RAW_BODY:
+        //
+        // RAW_BODY - This is simply looking for raw octets following the properties sections
+        // The message depth is OK if the properties are complete.
+        //
+        content->section_raw_body.buffer     = content->parse_buffer;
+        content->section_raw_body.offset     = !!content->parse_buffer ? content->parse_cursor - qd_buffer_base(content->parse_buffer) : 0;
+        content->section_raw_body.length     = 0;
+        content->section_raw_body.hdr_length = 0;
+        content->section_raw_body.parsed     = true;
+        content->section_raw_body.tag        = 0;
+
+        content->parse_depth = QD_DEPTH_RAW_BODY;
+        if (depth == QD_DEPTH_RAW_BODY) {
+            break;
+        }
 
         // fallthrough
 
@@ -2354,7 +2354,7 @@ void qd_message_raw_body_and_start_cutthrough(qd_message_t *in_msg, qd_buffer_t 
     //
     // If there are no body octets in the buffer list, return a NULL buffer pointer.  We will do pure cut-through in this case.
     //
-    if (content->section_raw_body.buffer == 0 || (qd_buffer_size(content->section_raw_body.buffer) == 0 && !DEQ_NEXT(content->section_raw_body.buffer))) {
+    if (content->section_raw_body.buffer == 0 || (qd_buffer_size(content->section_raw_body.buffer) == content->section_raw_body.offset && !DEQ_NEXT(content->section_raw_body.buffer))) {
         *buf    = 0;
         *offset = 0;
     } else {
@@ -2372,6 +2372,7 @@ void qd_message_raw_body_and_start_cutthrough(qd_message_t *in_msg, qd_buffer_t 
         sys_atomic_init(&content->uct_consume_slot, 0);
     }
 
+    msg->uct_started = true;
     UNLOCK(&content->lock);
 }
 

@@ -641,7 +641,7 @@ static void link_setup_CSIDE_IO(tcplite_connection_t *conn)
 static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *conn)
 {
     tcplite_listener_t  *li = (tcplite_listener_t*) conn->common.parent;
-    qd_composed_field_t *props = 0;
+    qd_composed_field_t *message = 0;
 
     //
     // The lock is used here to protect access to the reply_to field.  This field is written
@@ -655,34 +655,37 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
     //
     sys_mutex_lock(&conn->common.lock);
     if (!!conn->reply_to) {
-        props = qd_compose(QD_PERFORMATIVE_PROPERTIES, 0);
-        qd_compose_start_list(props);
-        qd_compose_insert_null(props);                                // message-id
-        qd_compose_insert_null(props);                                // user-id
-        qd_compose_insert_string(props, li->adaptor_config.address);  // to
-        qd_compose_insert_null(props);                                // subject
-        qd_compose_insert_string(props, conn->reply_to);              // reply-to
-        vflow_serialize_identity(conn->common.vflow, props);          // correlation-id
-        qd_compose_insert_string(props, QD_CONTENT_TYPE_APP_OCTETS);  // content-type
-        //qd_compose_insert_null(props);                              // content-encoding
-        //qd_compose_insert_timestamp(props, 0);                      // absolute-expiry-time
-        //qd_compose_insert_timestamp(props, 0);                      // creation-time
-        //qd_compose_insert_null(props);                              // group-id
-        //qd_compose_insert_uint(props, 0);                           // group-sequence
-        //qd_compose_insert_null(props);                              // reply-to-group-id
-        qd_compose_end_list(props);
+        message = qd_compose(QD_PERFORMATIVE_PROPERTIES, 0);
+        qd_compose_start_list(message);
+        qd_compose_insert_null(message);                                // message-id
+        qd_compose_insert_null(message);                                // user-id
+        qd_compose_insert_string(message, li->adaptor_config.address);  // to
+        qd_compose_insert_null(message);                                // subject
+        qd_compose_insert_string(message, conn->reply_to);              // reply-to
+        vflow_serialize_identity(conn->common.vflow, message);          // correlation-id
+        qd_compose_insert_string(message, QD_CONTENT_TYPE_APP_OCTETS);  // content-type
+        //qd_compose_insert_null(message);                              // content-encoding
+        //qd_compose_insert_timestamp(message, 0);                      // absolute-expiry-time
+        //qd_compose_insert_timestamp(message, 0);                      // creation-time
+        //qd_compose_insert_null(message);                              // group-id
+        //qd_compose_insert_uint(message, 0);                           // group-sequence
+        //qd_compose_insert_null(message);                              // reply-to-group-id
+        qd_compose_end_list(message);
+
+        message = qd_compose(QD_PERFORMATIVE_BODY_AMQP_VALUE, message);
+        qd_compose_insert_null(message);
     }
     sys_mutex_unlock(&conn->common.lock);
 
-    if (props == 0) {
+    if (message == 0) {
         return false;
     }
 
     conn->inbound_stream = qd_message();
     qd_message_set_streaming_annotation(conn->inbound_stream);
 
-    qd_message_compose_2(conn->inbound_stream, props, false);
-    qd_compose_free(props);
+    qd_message_compose_2(conn->inbound_stream, message, false);
+    qd_compose_free(message);
 
     //
     // Start cut-through mode for this stream.
@@ -707,7 +710,7 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
 
 static void compose_and_send_server_stream_CSIDE_IO(tcplite_connection_t *conn)
 {
-    qd_composed_field_t *props = 0;
+    qd_composed_field_t *message = 0;
 
     //
     // The lock is used here to protect access to the reply_to field.  This field is written
@@ -719,28 +722,31 @@ static void compose_and_send_server_stream_CSIDE_IO(tcplite_connection_t *conn)
     // (or properties if there are no application-properties) section will constitute the stream
     // and will consist solely of AMQP transport frames.
     //
-    props = qd_compose(QD_PERFORMATIVE_PROPERTIES, 0);
-    qd_compose_start_list(props);
-    qd_compose_insert_null(props);                                // message-id
-    qd_compose_insert_null(props);                                // user-id
-    qd_compose_insert_string(props, conn->reply_to);              // to
-    qd_compose_insert_null(props);                                // subject
-    qd_compose_insert_null(props);                                // reply-to
-    qd_compose_insert_null(props);                                // correlation-id
-    qd_compose_insert_string(props, QD_CONTENT_TYPE_APP_OCTETS);  // content-type
-    //qd_compose_insert_null(props);                              // content-encoding
-    //qd_compose_insert_timestamp(props, 0);                      // absolute-expiry-time
-    //qd_compose_insert_timestamp(props, 0);                      // creation-time
-    //qd_compose_insert_null(props);                              // group-id
-    //qd_compose_insert_uint(props, 0);                           // group-sequence
-    //qd_compose_insert_null(props);                              // reply-to-group-id
-    qd_compose_end_list(props);
+    message = qd_compose(QD_PERFORMATIVE_PROPERTIES, 0);
+    qd_compose_start_list(message);
+    qd_compose_insert_null(message);                                // message-id
+    qd_compose_insert_null(message);                                // user-id
+    qd_compose_insert_string(message, conn->reply_to);              // to
+    qd_compose_insert_null(message);                                // subject
+    qd_compose_insert_null(message);                                // reply-to
+    qd_compose_insert_null(message);                                // correlation-id
+    qd_compose_insert_string(message, QD_CONTENT_TYPE_APP_OCTETS);  // content-type
+    //qd_compose_insert_null(message);                              // content-encoding
+    //qd_compose_insert_timestamp(message, 0);                      // absolute-expiry-time
+    //qd_compose_insert_timestamp(message, 0);                      // creation-time
+    //qd_compose_insert_null(message);                              // group-id
+    //qd_compose_insert_uint(message, 0);                           // group-sequence
+    //qd_compose_insert_null(message);                              // reply-to-group-id
+    qd_compose_end_list(message);
+
+    message = qd_compose(QD_PERFORMATIVE_BODY_AMQP_VALUE, message);
+    qd_compose_insert_null(message);
 
     conn->inbound_stream = qd_message();
     qd_message_set_streaming_annotation(conn->inbound_stream);
 
-    qd_message_compose_2(conn->inbound_stream, props, false);
-    qd_compose_free(props);
+    qd_message_compose_2(conn->inbound_stream, message, false);
+    qd_compose_free(message);
 
     //
     // Start cut-through mode for this stream.
@@ -842,7 +848,6 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
 
     conn->raw_conn = pn_raw_connection();
     pn_raw_connection_set_context(conn->raw_conn, &conn->context);
-
 
     //
     // Note that we do not start_unicast_cutthrough here.  This is done in a more orderly way during
