@@ -445,6 +445,26 @@ static void log_link_message(qd_connection_t *conn, pn_link_t *pn_link, qd_messa
     }
 }
 
+
+static void activate_peer_connection(qd_router_t *router, void *activation_handle, qd_message_activation_type_t activation_type, qd_direction_t dir)
+{
+    switch (activation_type) {
+    case QD_ACTIVATION_NONE:
+        break;
+
+    case QD_ACTIVATION_AMQP:
+        sys_mutex_lock(qd_server_get_activation_lock(router->qd->server));
+        qd_server_activate_cutthrough((qd_connection_t*) activation_handle, dir == QD_INCOMING);
+        sys_mutex_unlock(qd_server_get_activation_lock(router->qd->server));
+        break;
+
+    case QD_ACTIVATION_RAW:
+        pn_raw_connection_wake((pn_raw_connection_t*) activation_handle);
+        break;
+    }
+}
+
+
 /**
  * Inbound Delivery Handler
  *
@@ -566,7 +586,19 @@ static bool AMQP_rx_handler(void* context, qd_link_t *link)
     //
 
     if (delivery) {
-        qdr_delivery_continue(router->router_core, delivery, pn_delivery_settled(pnd));
+        if (qd_message_is_unicast_cutthrough(msg)) {
+            void                         *activation_handle;
+            qd_message_activation_type_t  activation_type;
+            qd_message_get_consumer_activation(msg, &activation_handle, &activation_type);
+            activate_peer_connection(router, activation_handle, activation_type, QD_OUTGOING);
+
+            if (receive_complete) {
+                qdr_delivery_continue(router->router_core, delivery, pn_delivery_settled(pnd));
+            }
+        }
+        else {
+            qdr_delivery_continue(router->router_core, delivery, pn_delivery_settled(pnd));
+        }
         return next_delivery;
     }
 
@@ -2035,6 +2067,8 @@ static uint64_t CORE_link_deliver(void *context, qdr_link_t *link, qdr_delivery_
         dlv->cutthrough_list_ref->dlv = dlv;
         DEQ_INSERT_TAIL(qconn->outbound_cutthrough_deliveries, dlv->cutthrough_list_ref);
         qdr_delivery_incref(dlv, "CORE_link_deliver - Added to outbound_cutthrough_deliveries");
+
+        qd_message_set_consumer_activation(msg_out, qconn, QD_ACTIVATION_AMQP);
     }
 
     qd_message_send(msg_out, qlink, ra_flags, &q3_stalled);

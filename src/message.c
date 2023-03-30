@@ -1581,6 +1581,10 @@ qd_message_t *qd_message_receive(pn_delivery_t *delivery)
         return discard_receive(delivery, link, (qd_message_t*) msg);
     }
 
+    if (!msg->uct_started && IS_ATOMIC_FLAG_SET(&msg->content->uct_enabled)) {
+        msg->uct_started = true;
+    }
+
     //
     // If this message is in cut-through mode, do cut-through-specific receive processing.
     //
@@ -2027,7 +2031,14 @@ void qd_message_send(qd_message_t *in_msg,
         }
     }
 
-    if (IS_ATOMIC_FLAG_SET(&content->uct_enabled) && !IS_ATOMIC_FLAG_SET(&content->receive_complete) && !msg->cursor.cursor) {
+    //
+    // If we have sent all of the content in the normal buffers and cut-through is enabled,
+    // switch to cut-through mode for further sends.
+    //
+    if (IS_ATOMIC_FLAG_SET(&content->uct_enabled)
+        && !IS_ATOMIC_FLAG_SET(&content->receive_complete)
+        && (msg->cursor.cursor - qd_buffer_base(msg->cursor.buffer) == qd_buffer_size(msg->cursor.buffer))
+        && !DEQ_NEXT(msg->cursor.buffer)) {
         msg->uct_started = true;
         qd_message_send_cut_through(msg, content, pnl, pns, q3_stalled);
     } else {
@@ -2372,7 +2383,6 @@ void qd_message_raw_body_and_start_cutthrough(qd_message_t *in_msg, qd_buffer_t 
         sys_atomic_init(&content->uct_consume_slot, 0);
     }
 
-    msg->uct_started = true;
     UNLOCK(&content->lock);
 }
 

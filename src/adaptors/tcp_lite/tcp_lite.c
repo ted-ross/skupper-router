@@ -797,6 +797,8 @@ static void handle_outbound_delivery_LSIDE(tcplite_connection_t *conn, qdr_link_
         // stream-content consumption.
         //
         qd_message_set_consumer_activation(conn->outbound_stream, conn->raw_conn, QD_ACTIVATION_RAW);
+
+        qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] LSIDE outbound delivery", conn->conn_id);
     }
     sys_mutex_unlock(&conn->common.lock);
 
@@ -839,6 +841,8 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
     conn->conn_id         = qd_server_allocate_connection_id(tcplite_context->server);
     conn->context.context = conn;
     conn->context.handler = on_connection_event_CSIDE_IO;
+
+    qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] CSIDE outbound delivery", conn->conn_id);
 
     sys_mutex_lock(&cr->common.lock);
     DEQ_INSERT_TAIL(cr->connections, conn);
