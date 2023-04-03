@@ -1542,6 +1542,8 @@ static void qd_message_receive_cutthrough(qd_message_t *in_msg, pn_delivery_t *d
             //
             sys_atomic_set(&content->uct_produce_slot, (use_slot + 1) % UCT_SLOT_COUNT);
         }
+    } else if (!pn_delivery_partial(delivery) && pn_delivery_pending(delivery) == 0) {
+        qd_message_set_receive_complete(in_msg);
     }
 }
 

@@ -2081,6 +2081,16 @@ static uint64_t CORE_link_deliver(void *context, qdr_link_t *link, qdr_delivery_
     bool send_complete = qdr_delivery_send_complete(dlv);
 
     if (send_complete) {
+        if (qd_message_is_unicast_cutthrough(msg_out)) {
+            qdr_delivery_ref_t *dref = dlv->cutthrough_list_ref;
+            if (!!dref) {
+                DEQ_REMOVE(qconn->outbound_cutthrough_deliveries, dref);
+                dlv->cutthrough_list_ref = 0;
+                qdr_delivery_decref(router->router_core, dlv, "AMQP_conn_wake_handler - removed send-complete from outbound_cutthrough_deliveries");
+                free_qdr_delivery_ref_t(dref);
+            }
+        }
+
         if (qd_message_aborted(msg_out)) {
             // Aborted messages must be settled locally
             // Settling does not produce any disposition to message sender.

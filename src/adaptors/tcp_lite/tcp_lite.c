@@ -374,7 +374,7 @@ static void free_connection_IO(tcplite_connection_t *conn)
 
     if (!!conn->inbound_delivery) {
         if (!!conn->inbound_stream) {
-            qd_message_receive_complete(conn->inbound_stream);
+            qd_message_set_receive_complete(conn->inbound_stream);
             qdr_delivery_continue(tcplite_context->core, conn->inbound_delivery, true);
         }
 
@@ -786,6 +786,9 @@ static void extract_metadata_from_stream_CSIDE(tcplite_connection_t *conn)
 
 static void handle_outbound_delivery_LSIDE(tcplite_connection_t *conn, qdr_link_t *link, qdr_delivery_t *delivery)
 {
+    qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] handle_outbound_delivery_LSIDE - receive_complete=%s",
+           conn->conn_id, qd_message_receive_complete(conn->outbound_stream) ? "true" : "false");
+
     sys_mutex_lock(&conn->common.lock);
     if (!conn->outbound_delivery) {
         qdr_delivery_incref(delivery, "handle_outbound_delivery_LSIDE");
@@ -874,6 +877,8 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
  */
 static void handle_outbound_delivery_CSIDE(tcplite_connection_t *conn, qdr_link_t *link, qdr_delivery_t *delivery, bool settled)
 {
+    qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] handle_outbound_delivery_CSIDE - receive_complete=%s",
+           conn->conn_id, qd_message_receive_complete(conn->outbound_stream) ? "true" : "false");
     if (qd_message_receive_complete(conn->outbound_stream) && !pn_raw_connection_is_write_closed(conn->raw_conn)) {
         pn_raw_connection_wake(conn->raw_conn);
     }
