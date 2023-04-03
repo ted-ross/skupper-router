@@ -1422,6 +1422,18 @@ QD_EXPORT void qd_dispatch_delete_tcp_listener(qd_dispatch_t *qd, void *impl)
 
 QD_EXPORT qd_error_t qd_entity_refresh_tcpListener(qd_entity_t* entity, void *impl)
 {
+    tcplite_listener_t *li = (tcplite_listener_t*) impl;
+
+    if (!!li->adaptor_listener) {
+        qd_listener_oper_status_t os = qd_adaptor_listener_oper_status(li->adaptor_listener);
+
+        if (qd_entity_set_string(entity, "operStatus", os == QD_LISTENER_OPER_UP ? "up" : "down") == 0) {
+            return QD_ERROR_NONE;
+        }
+
+        return qd_error_code();
+    }
+
     return QD_ERROR_NONE;
 }
 
