@@ -2002,7 +2002,7 @@ void qd_message_send(qd_message_t *in_msg,
                     msg->cursor.buffer = next_buf;
                     msg->cursor.cursor = (next_buf) ? qd_buffer_base(next_buf) : 0;
 
-                    SET_ATOMIC_BOOL(&msg->send_complete, (complete && !next_buf));
+                    SET_ATOMIC_BOOL(&msg->send_complete, (complete && !next_buf && !IS_ATOMIC_FLAG_SET(&content->uct_enabled)));
                 }
 
                 buf = next_buf;
@@ -2038,9 +2038,8 @@ void qd_message_send(qd_message_t *in_msg,
     // switch to cut-through mode for further sends.
     //
     if (IS_ATOMIC_FLAG_SET(&content->uct_enabled)
-        && !IS_ATOMIC_FLAG_SET(&content->receive_complete)
-        && (msg->cursor.cursor - qd_buffer_base(msg->cursor.buffer) == qd_buffer_size(msg->cursor.buffer))
-        && !DEQ_NEXT(msg->cursor.buffer)) {
+        && (!msg->cursor.buffer || ((msg->cursor.cursor - qd_buffer_base(msg->cursor.buffer) == qd_buffer_size(msg->cursor.buffer))
+                                   && !DEQ_NEXT(msg->cursor.buffer)))) {
         msg->uct_started = true;
         qd_message_send_cut_through(msg, content, pnl, pns, q3_stalled);
     } else {
