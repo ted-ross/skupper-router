@@ -514,7 +514,6 @@ static uint64_t consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd
     uint64_t octet_count = 0;
 
     if (limit > 0) {
-        bool was_blocked = !qd_message_can_produce_buffers(stream);
         qd_buffer_list_t buffers = DEQ_EMPTY;
         size_t actual = qd_message_consume_buffers(stream, &buffers, limit);
         assert(actual == DEQ_SIZE(buffers));
@@ -534,7 +533,7 @@ static uint64_t consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd
             pn_raw_connection_write_buffers(raw_conn, raw_buffers, actual);
         }
 
-        if (was_blocked && qd_message_can_produce_buffers(stream)) {
+        if (qd_message_resume_from_stalled(stream)) {
             //
             // Activate the producing connection
             //

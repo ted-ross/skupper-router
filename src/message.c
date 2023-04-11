@@ -1500,7 +1500,7 @@ bool qd_message_has_data_in_content_or_pending_buffers(qd_message_t   *msg)
 
 static void qd_message_receive_cutthrough(qd_message_t *in_msg, pn_delivery_t *delivery, pn_link_t *link, qd_message_content_t *content)
 {
-    if (pn_delivery_pending(delivery) > 0 && (sys_atomic_get(&content->uct_consume_slot) - sys_atomic_get(&content->uct_produce_slot)) % UCT_SLOT_COUNT != 1) {
+    while (pn_delivery_pending(delivery) > 0 && (sys_atomic_get(&content->uct_consume_slot) - sys_atomic_get(&content->uct_produce_slot)) % UCT_SLOT_COUNT != 1) {
         //
         // The ring is not full, build a buffer list from the link data and produce one slot.
         //
@@ -1508,10 +1508,15 @@ static void qd_message_receive_cutthrough(qd_message_t *in_msg, pn_delivery_t *d
         ssize_t      rc;
         qd_buffer_t *buf;
         bool         produced_data = false;
+        int          limit = 16;
 
         assert(DEQ_SIZE(content->uct_slots[use_slot]) == 0);
 
-        while (1) {
+        while (true) {
+            if (limit-- == 0) {
+                break;
+            }
+
             buf = qd_buffer();
             rc  = pn_link_recv(link, (char*) qd_buffer_cursor(buf), qd_buffer_capacity(buf));
             if (rc < 0) {
@@ -1519,6 +1524,7 @@ static void qd_message_receive_cutthrough(qd_message_t *in_msg, pn_delivery_t *d
                 if (rc != PN_EOS) {
                     SET_ATOMIC_FLAG(&content->aborted);
                 }
+                break;
             } else if (rc == 0) {
                 //
                 // We've received all the data that is available now.  We will come back later for more.
@@ -1541,8 +1547,14 @@ static void qd_message_receive_cutthrough(qd_message_t *in_msg, pn_delivery_t *d
             // Advance the producer slot pointer
             //
             sys_atomic_set(&content->uct_produce_slot, (use_slot + 1) % UCT_SLOT_COUNT);
+
+            if ((sys_atomic_get(&content->uct_consume_slot) - sys_atomic_get(&content->uct_produce_slot)) % UCT_SLOT_COUNT == 1) {
+                SET_ATOMIC_FLAG(&content->uct_producer_stalled);
+            }
         }
-    } else if (!pn_delivery_partial(delivery) && pn_delivery_pending(delivery) == 0) {
+    }
+
+    if (!pn_delivery_partial(delivery) && pn_delivery_pending(delivery) == 0) {
         qd_message_set_receive_complete(in_msg);
     }
 }
@@ -1550,6 +1562,10 @@ static void qd_message_receive_cutthrough(qd_message_t *in_msg, pn_delivery_t *d
 
 qd_message_t *qd_message_receive(pn_delivery_t *delivery)
 {
+    if (!delivery) {
+        return 0;
+    }
+
     pn_link_t *link = pn_delivery_link(delivery);
     qd_link_t *qdl  = (qd_link_t*) pn_link_get_context(link);
     ssize_t    rc;
@@ -3238,6 +3254,10 @@ void qd_message_produce_buffers(qd_message_t *stream, qd_buffer_list_t *buffers)
     uint32_t useSlot = sys_atomic_get(&content->uct_produce_slot);
     DEQ_MOVE(*buffers, content->uct_slots[useSlot]);
     sys_atomic_set(&content->uct_produce_slot, (useSlot + 1) % UCT_SLOT_COUNT);
+
+    if ((sys_atomic_get(&content->uct_consume_slot) - sys_atomic_get(&content->uct_produce_slot)) % UCT_SLOT_COUNT == 1) {
+        SET_ATOMIC_FLAG(&content->uct_producer_stalled);
+    }
 }
 
 
@@ -3261,6 +3281,20 @@ int qd_message_consume_buffers(qd_message_t *stream, qd_buffer_list_t *buffers, 
     }
 
     return count;
+}
+
+
+bool qd_message_resume_from_stalled(qd_message_t *stream)
+{
+    qd_message_content_t *content = MSG_CONTENT(stream);
+
+    if (IS_ATOMIC_FLAG_SET(&content->uct_producer_stalled)
+        && (sys_atomic_get(&content->uct_produce_slot) - sys_atomic_get(&content->uct_consume_slot)) % UCT_SLOT_COUNT < UCT_RESUME_THRESHOLD) {
+        CLEAR_ATOMIC_FLAG(&content->uct_producer_stalled);
+        return true;
+    }
+
+    return false;
 }
 
 

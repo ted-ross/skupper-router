@@ -691,6 +691,21 @@ void qd_message_produce_buffers(qd_message_t *stream, qd_buffer_list_t *buffers)
  */
 int qd_message_consume_buffers(qd_message_t *stream, qd_buffer_list_t *buffers, int limit);
 
+
+/**
+ * Indicate whether this stream should be resumed from a stalled state.  This will be the case
+ * if (a) the stream was stalled due to being full, and (b) the payload has shrunk down below
+ * the resume threshold.
+ *
+ * If the result is true, there is a side effect of clearing the 'stalled' state.
+ *
+ * @param stream Pointer to the message
+ * @return true Yes, the stream was stalled and buffer production may continue
+ * @return false No, the stream was not stalled or it was stalled and is not yet ready to resume
+ */
+bool qd_message_resume_from_stalled(qd_message_t *stream);
+
+
 typedef enum {
     QD_ACTIVATION_NONE = 0,
     QD_ACTIVATION_AMQP,

@@ -313,6 +313,25 @@ static void qd_router_connection_get_config(const qd_connection_t  *conn,
 }
 
 
+static void activate_peer_connection(qd_router_t *router, void *activation_handle, qd_message_activation_type_t activation_type, qd_direction_t dir)
+{
+    switch (activation_type) {
+    case QD_ACTIVATION_NONE:
+        break;
+
+    case QD_ACTIVATION_AMQP:
+        sys_mutex_lock(qd_server_get_activation_lock(router->qd->server));
+        qd_server_activate_cutthrough((qd_connection_t*) activation_handle, dir == QD_INCOMING);
+        sys_mutex_unlock(qd_server_get_activation_lock(router->qd->server));
+        break;
+
+    case QD_ACTIVATION_RAW:
+        pn_raw_connection_wake((pn_raw_connection_t*) activation_handle);
+        break;
+    }
+}
+
+
 static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, void *context)
 {
     qdr_connection_t *qconn  = (qdr_connection_t*) qd_connection_get_context(conn);
@@ -348,6 +367,13 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
                 free_qdr_delivery_ref_t(dref);
             }
 
+            if (!q3_stalled && qd_message_resume_from_stalled(msg)) {
+                void                         *activation_handle;
+                qd_message_activation_type_t  activation_type;
+                qd_message_get_producer_activation(msg, &activation_handle, &activation_type);
+                activate_peer_connection(router, activation_handle, activation_type, QD_INCOMING);
+            }
+
             dref = next_dref;
         }
     }
@@ -361,6 +387,12 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
             qdr_delivery_ref_t *next_dref = DEQ_NEXT(dref);
             qd_message_t       *msg       = qdr_delivery_message(dref->dlv);
             qd_message_receive(qdr_node_delivery_pn_from_qdr(dref->dlv));
+
+            // TODO - activate something here
+            void                         *activation_handle;
+            qd_message_activation_type_t  activation_type;
+            qd_message_get_consumer_activation(msg, &activation_handle, &activation_type);
+            activate_peer_connection(router, activation_handle, activation_type, QD_OUTGOING);
 
             if (qd_message_receive_complete(msg)) {
                 DEQ_REMOVE(conn->inbound_cutthrough_deliveries, dref);
@@ -446,25 +478,6 @@ static void log_link_message(qd_connection_t *conn, pn_link_t *pn_link, qd_messa
 }
 
 
-static void activate_peer_connection(qd_router_t *router, void *activation_handle, qd_message_activation_type_t activation_type, qd_direction_t dir)
-{
-    switch (activation_type) {
-    case QD_ACTIVATION_NONE:
-        break;
-
-    case QD_ACTIVATION_AMQP:
-        sys_mutex_lock(qd_server_get_activation_lock(router->qd->server));
-        qd_server_activate_cutthrough((qd_connection_t*) activation_handle, dir == QD_INCOMING);
-        sys_mutex_unlock(qd_server_get_activation_lock(router->qd->server));
-        break;
-
-    case QD_ACTIVATION_RAW:
-        pn_raw_connection_wake((pn_raw_connection_t*) activation_handle);
-        break;
-    }
-}
-
-
 /**
  * Inbound Delivery Handler
  *
@@ -502,6 +515,15 @@ static bool AMQP_rx_handler(void* context, qd_link_t *link)
     //
     qd_message_t   *msg   = qd_message_receive(pnd);
     bool receive_complete = qd_message_receive_complete(msg);
+
+    if (!receive_complete && !!delivery && !delivery->cutthrough_list_ref && qd_message_is_unicast_cutthrough(msg)) {
+        delivery->cutthrough_list_ref = new_qdr_delivery_ref_t();
+        ZERO(delivery->cutthrough_list_ref);
+        delivery->cutthrough_list_ref->dlv = delivery;
+        DEQ_INSERT_TAIL(conn->inbound_cutthrough_deliveries, delivery->cutthrough_list_ref);
+        qdr_delivery_incref(delivery, "AMQP_rx_handler - Added to inbound_cutthrough_deliveries");
+        qd_message_set_producer_activation(msg, conn, QD_ACTIVATION_AMQP);
+    }
 
     if (!qd_message_oversize(msg)) {
         // message not rejected as oversize
@@ -2068,7 +2090,7 @@ static uint64_t CORE_link_deliver(void *context, qdr_link_t *link, qdr_delivery_
         DEQ_INSERT_TAIL(qconn->outbound_cutthrough_deliveries, dlv->cutthrough_list_ref);
         qdr_delivery_incref(dlv, "CORE_link_deliver - Added to outbound_cutthrough_deliveries");
 
-        qd_message_set_consumer_activation(msg_out, qconn, QD_ACTIVATION_AMQP);
+        qd_message_set_consumer_activation(msg_out, qconn, QD_ACTIVATION_AMQP); // TODO - determine if this is right... should be producer?
     }
 
     qd_message_send(msg_out, qlink, ra_flags, &q3_stalled);
