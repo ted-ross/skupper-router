@@ -1524,6 +1524,7 @@ static void qd_message_receive_cutthrough(qd_message_t *in_msg, pn_delivery_t *d
                 if (rc != PN_EOS) {
                     SET_ATOMIC_FLAG(&content->aborted);
                 }
+                qd_buffer_free(buf);
                 break;
             } else if (rc == 0) {
                 //

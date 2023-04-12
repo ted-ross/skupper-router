@@ -106,7 +106,27 @@ static void qdr_node_disconnect_deliveries(qdr_core_t *core, qd_link_t *link, qd
 
         pn_delivery_set_context(pdlv, 0);
         qdr_delivery_set_context(qdlv, 0);
-        qdr_delivery_decref(core, qdlv, "removed reference from pn_delivery");
+        qdr_delivery_decref(core, qdlv, "qdr_node_disconnect_deliveries - removed reference from pn_delivery");
+
+        //
+        // Remove delivery from cut-through lists
+        //
+        if (!!qdlv->cutthrough_list_ref) {
+            qdr_link_t         *qdrlink = qdr_delivery_link(qdlv);
+            qd_connection_t    *conn    = qd_link_connection(link);
+            qdr_delivery_ref_t *dref    = qdlv->cutthrough_list_ref;
+
+            if (qdr_link_direction(qdrlink) == QD_INCOMING) {
+                DEQ_REMOVE(conn->inbound_cutthrough_deliveries, dref);
+                dref->dlv->cutthrough_list_ref = 0;
+                qdr_delivery_decref(core, dref->dlv, "qdr_node_disconnect_deliveries - removed reference from inbound_cutthrough_deliveries");
+            } else {
+                DEQ_REMOVE(conn->outbound_cutthrough_deliveries, dref);
+                dref->dlv->cutthrough_list_ref = 0;
+                qdr_delivery_decref(core, dref->dlv, "qdr_node_disconnect_deliveries - removed reference from outbound_cutthrough_deliveries");
+            }
+            free_qdr_delivery_ref_t(dref);
+        }
     }
 }
 
