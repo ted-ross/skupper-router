@@ -111,22 +111,25 @@ static void qdr_node_disconnect_deliveries(qdr_core_t *core, qd_link_t *link, qd
         //
         // Remove delivery from cut-through lists
         //
+        /*
         if (!!qdlv->cutthrough_list_ref) {
             qdr_link_t         *qdrlink = qdr_delivery_link(qdlv);
             qd_connection_t    *conn    = qd_link_connection(link);
             qdr_delivery_ref_t *dref    = qdlv->cutthrough_list_ref;
 
+            qdlv->cutthrough_list_ref = 0;
+            assert(dref->dlv == qdlv);
+
             if (qdr_link_direction(qdrlink) == QD_INCOMING) {
                 DEQ_REMOVE(conn->inbound_cutthrough_deliveries, dref);
-                dref->dlv->cutthrough_list_ref = 0;
-                qdr_delivery_decref(core, dref->dlv, "qdr_node_disconnect_deliveries - removed reference from inbound_cutthrough_deliveries");
+                qdr_delivery_decref(core, qdlv, "qdr_node_disconnect_deliveries - removed reference from inbound_cutthrough_deliveries");
             } else {
                 DEQ_REMOVE(conn->outbound_cutthrough_deliveries, dref);
-                dref->dlv->cutthrough_list_ref = 0;
-                qdr_delivery_decref(core, dref->dlv, "qdr_node_disconnect_deliveries - removed reference from outbound_cutthrough_deliveries");
+                qdr_delivery_decref(core, qdlv, "qdr_node_disconnect_deliveries - removed reference from outbound_cutthrough_deliveries");
             }
             free_qdr_delivery_ref_t(dref);
         }
+        */
     }
 }
 
@@ -333,7 +336,7 @@ static void qd_router_connection_get_config(const qd_connection_t  *conn,
 }
 
 
-static void activate_peer_connection(qd_router_t *router, void *activation_handle, qd_message_activation_type_t activation_type, qd_direction_t dir)
+static void activate_connection(qd_router_t *router, void *activation_handle, qd_message_activation_type_t activation_type, qd_direction_t dir)
 {
     switch (activation_type) {
     case QD_ACTIVATION_NONE:
@@ -391,7 +394,7 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
                 void                         *activation_handle;
                 qd_message_activation_type_t  activation_type;
                 qd_message_get_producer_activation(msg, &activation_handle, &activation_type);
-                activate_peer_connection(router, activation_handle, activation_type, QD_INCOMING);
+                activate_connection(router, activation_handle, activation_type, QD_INCOMING);
             }
 
             dref = next_dref;
@@ -408,11 +411,10 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
             qd_message_t       *msg       = qdr_delivery_message(dref->dlv);
             qd_message_receive(qdr_node_delivery_pn_from_qdr(dref->dlv));
 
-            // TODO - activate something here
             void                         *activation_handle;
             qd_message_activation_type_t  activation_type;
             qd_message_get_consumer_activation(msg, &activation_handle, &activation_type);
-            activate_peer_connection(router, activation_handle, activation_type, QD_OUTGOING);
+            activate_connection(router, activation_handle, activation_type, QD_OUTGOING);
 
             if (qd_message_receive_complete(msg)) {
                 DEQ_REMOVE(conn->inbound_cutthrough_deliveries, dref);
@@ -632,7 +634,7 @@ static bool AMQP_rx_handler(void* context, qd_link_t *link)
             void                         *activation_handle;
             qd_message_activation_type_t  activation_type;
             qd_message_get_consumer_activation(msg, &activation_handle, &activation_type);
-            activate_peer_connection(router, activation_handle, activation_type, QD_OUTGOING);
+            activate_connection(router, activation_handle, activation_type, QD_OUTGOING);
 
             if (receive_complete) {
                 qdr_delivery_continue(router->router_core, delivery, pn_delivery_settled(pnd));

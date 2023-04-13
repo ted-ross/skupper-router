@@ -72,7 +72,8 @@ struct tcplite_listener_t {
     qdr_link_t                *in_link;
     qd_adaptor_listener_t     *adaptor_listener;
     tcplite_connection_list_t  connections;
-    uint64_t                   conn_count;
+    uint64_t                   connections_opened;
+    uint64_t                   connections_closed;
 };
 
 ALLOC_DEFINE(tcplite_listener_t);
@@ -87,7 +88,8 @@ typedef struct tcplite_connector_t {
     uint64_t                   link_id;
     qdr_link_t                *out_link;
     tcplite_connection_list_t  connections;
-    uint64_t                   conn_count;
+    uint64_t                   connections_opened;
+    uint64_t                   connections_closed;
 } tcplite_connector_t;
 
 ALLOC_DEFINE(tcplite_connector_t);
@@ -414,11 +416,13 @@ static void free_connection_XSIDE_IO(tcplite_connection_t *conn)
         tcplite_listener_t *li = (tcplite_listener_t*) conn->common.parent;
         sys_mutex_lock(&li->lock);
         DEQ_REMOVE(li->connections, conn);
+        li->connections_closed++;
         sys_mutex_unlock(&li->lock);
     } else {
         tcplite_connector_t *cr = (tcplite_connector_t*) conn->common.parent;
         sys_mutex_lock(&cr->lock);
         DEQ_REMOVE(cr->connections, conn);
+        cr->connections_closed++;
         sys_mutex_unlock(&cr->lock);
     }
 
@@ -426,7 +430,7 @@ static void free_connection_XSIDE_IO(tcplite_connection_t *conn)
 }
 
 
-static void activate_peer_connection(void *activation_handle, qd_message_activation_type_t activation_type, qd_direction_t dir)
+static void activate_connection(void *activation_handle, qd_message_activation_type_t activation_type, qd_direction_t dir)
 {
     switch (activation_type) {
     case QD_ACTIVATION_NONE:
@@ -498,7 +502,7 @@ static uint64_t produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_
             void                         *activation_handle;
             qd_message_activation_type_t  activation_type;
             qd_message_get_consumer_activation(stream, &activation_handle, &activation_type);
-            activate_peer_connection(activation_handle, activation_type, QD_OUTGOING);
+            activate_connection(activation_handle, activation_type, QD_OUTGOING);
         }
     } else {
         *blocked = true;
@@ -540,7 +544,7 @@ static uint64_t consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd
             void                         *activation_handle;
             qd_message_activation_type_t  activation_type;
             qd_message_get_producer_activation(stream, &activation_handle, &activation_type);
-            activate_peer_connection(activation_handle, activation_type, QD_INCOMING);
+            activate_connection(activation_handle, activation_type, QD_INCOMING);
         }
     }
 
@@ -853,8 +857,8 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
 
     sys_mutex_lock(&cr->lock);
     DEQ_INSERT_TAIL(cr->connections, conn);
-    cr->conn_count++;
-    vflow_set_uint64(cr->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4, cr->conn_count);
+    cr->connections_opened++;
+    vflow_set_uint64(cr->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4, cr->connections_opened);
     sys_mutex_unlock(&cr->lock);
 
     conn->raw_conn = pn_raw_connection();
@@ -1188,8 +1192,8 @@ void on_accept(qd_adaptor_listener_t *listener, pn_listener_t *pn_listener, void
 
     sys_mutex_lock(&li->lock);
     DEQ_INSERT_TAIL(li->connections, conn);
-    li->conn_count++;
-    vflow_set_uint64(li->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4, li->conn_count);
+    li->connections_opened++;
+    vflow_set_uint64(li->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4, li->connections_opened);
     sys_mutex_unlock(&li->lock);
 
     conn->raw_conn = pn_raw_connection();
@@ -1445,7 +1449,17 @@ QD_EXPORT qd_error_t qd_entity_refresh_tcpListener(qd_entity_t* entity, void *im
     if (!!li->adaptor_listener) {
         qd_listener_oper_status_t os = qd_adaptor_listener_oper_status(li->adaptor_listener);
 
-        if (qd_entity_set_string(entity, "operStatus", os == QD_LISTENER_OPER_UP ? "up" : "down") == 0) {
+        sys_mutex_lock(&li->lock);
+        uint64_t co = li->connections_opened;
+        uint64_t cc = li->connections_closed;
+        sys_mutex_unlock(&li->lock);
+
+        if (   qd_entity_set_long(entity, "bytesIn",           0) == 0
+            && qd_entity_set_long(entity, "bytesOut",          0) == 0
+            && qd_entity_set_long(entity, "connectionsOpened", co) == 0
+            && qd_entity_set_long(entity, "connectionsClosed", cc) == 0
+            && qd_entity_set_string(entity, "operStatus", os == QD_LISTENER_OPER_UP ? "up" : "down") == 0)
+        {
             return QD_ERROR_NONE;
         }
 
@@ -1511,7 +1525,22 @@ QD_EXPORT void qd_dispatch_delete_tcp_connector(qd_dispatch_t *qd, void *impl)
 
 QD_EXPORT qd_error_t qd_entity_refresh_tcpConnector(qd_entity_t* entity, void *impl)
 {
-    return QD_ERROR_NONE;
+    tcplite_connector_t *cr = (tcplite_connector_t*) impl;
+
+    sys_mutex_lock(&cr->lock);
+    uint64_t co = cr->connections_opened;
+    uint64_t cc = cr->connections_closed;
+    sys_mutex_unlock(&cr->lock);
+
+    if (   qd_entity_set_long(entity, "bytesIn",           0) == 0
+        && qd_entity_set_long(entity, "bytesOut",          0) == 0
+        && qd_entity_set_long(entity, "connectionsOpened", co) == 0
+        && qd_entity_set_long(entity, "connectionsClosed", cc) == 0)
+    {
+        return QD_ERROR_NONE;
+    }
+
+    return qd_error_code();
 }
 
 
