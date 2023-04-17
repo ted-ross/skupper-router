@@ -59,6 +59,17 @@ void sys_rwlock_rdlock(sys_rwlock_t *lock);
 void sys_rwlock_unlock(sys_rwlock_t *lock);
 
 
+typedef struct sys_spinlock_t sys_spinlock_t;
+struct sys_spinlock_t {
+    pthread_spinlock_t lock;
+};
+
+void sys_spinlock_init(sys_spinlock_t *lock);
+void sys_spinlock_free(sys_spinlock_t *lock);
+void sys_spinlock_lock(sys_spinlock_t *lock);
+void sys_spinlock_unlock(sys_spinlock_t *lock);
+
+
 typedef struct sys_thread_t sys_thread_t;
 
 sys_thread_t *sys_thread(const char *thread_name, void *(*run_function) (void *), void *arg);
