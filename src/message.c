@@ -3249,6 +3249,13 @@ bool qd_message_can_consume_buffers(const qd_message_t *stream)
 }
 
 
+int qd_message_full_slot_count(const qd_message_t *stream)
+{
+    qd_message_content_t *content = MSG_CONTENT(stream);
+    return (sys_atomic_get(&content->uct_produce_slot) - sys_atomic_get(&content->uct_consume_slot)) % UCT_SLOT_COUNT;
+}
+
+
 void qd_message_produce_buffers(qd_message_t *stream, qd_buffer_list_t *buffers)
 {
     qd_message_content_t *content = MSG_CONTENT(stream);
@@ -3299,33 +3306,29 @@ bool qd_message_resume_from_stalled(qd_message_t *stream)
 }
 
 
-void qd_message_set_consumer_activation(qd_message_t *stream, void *handle, qd_message_activation_type_t activation_type)
+void qd_message_set_consumer_activation(qd_message_t *stream, qd_message_activation_t *activation)
 {
     qd_message_content_t *content = MSG_CONTENT(stream);
-    content->uct_consumer_activation      = handle;
-    content->uct_consumer_activation_type = activation_type;
+    content->uct_consumer_activation = *activation;
 }
 
 
-void qd_message_get_consumer_activation(const qd_message_t *stream, void **handle, qd_message_activation_type_t *activation_type)
+void qd_message_get_consumer_activation(const qd_message_t *stream, qd_message_activation_t *activation)
 {
     qd_message_content_t *content = MSG_CONTENT(stream);
-    *handle          = content->uct_consumer_activation;
-    *activation_type = content->uct_consumer_activation_type;
+    *activation = content->uct_consumer_activation;
 }
 
 
-void qd_message_set_producer_activation(qd_message_t *stream, void *handle, qd_message_activation_type_t activation_type)
+void qd_message_set_producer_activation(qd_message_t *stream, qd_message_activation_t *activation)
 {
     qd_message_content_t *content = MSG_CONTENT(stream);
-    content->uct_producer_activation      = handle;
-    content->uct_producer_activation_type = activation_type;
+    content->uct_producer_activation = *activation;
 }
 
 
-void qd_message_get_producer_activation(const qd_message_t *stream, void **handle, qd_message_activation_type_t *activation_type)
+void qd_message_get_producer_activation(const qd_message_t *stream, qd_message_activation_t *activation)
 {
     qd_message_content_t *content = MSG_CONTENT(stream);
-    *handle          = content->uct_producer_activation;
-    *activation_type = content->uct_producer_activation_type;
+    *activation = content->uct_producer_activation;
 }

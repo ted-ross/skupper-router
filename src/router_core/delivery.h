@@ -69,6 +69,7 @@ struct qdr_delivery_t {
     bool                    multicast;         /// True if this delivery is targeted for a multicast address.
     bool                    via_edge;          /// True if this delivery arrived via an edge-connection.
     bool                    stuck;             /// True if this delivery was counted as stuck.
+    bool                    in_cutthrough_worklist;
 };
 
 ALLOC_DECLARE(qdr_delivery_t);
@@ -119,7 +120,6 @@ bool qdr_delivery_move_delivery_state_CT(qdr_delivery_t *dlv, qdr_delivery_t *pe
 //
 // I/O thread only functions
 //
-
 
 /* release dlv and possibly schedule its deletion on the core thread */
 void qdr_delivery_decref(qdr_core_t *core, qdr_delivery_t *delivery, const char *label);

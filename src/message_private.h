@@ -24,9 +24,6 @@
 #include "qpid/dispatch/message.h"
 #include "qpid/dispatch/threading.h"
 
-#define UCT_SLOT_COUNT       8
-#define UCT_RESUME_THRESHOLD 4
-
 typedef struct qd_message_pvt_t qd_message_pvt_t;
 
 /** @file
@@ -154,15 +151,13 @@ typedef struct {
     sys_atomic_t         priority;                       // Message AMQP priority
     sys_atomic_t         aborted;                        // Message has been aborted
 
-    sys_atomic_t                  uct_enabled;
-    qd_buffer_list_t              uct_slots[UCT_SLOT_COUNT];
-    sys_atomic_t                  uct_produce_slot;
-    sys_atomic_t                  uct_consume_slot;
-    sys_atomic_t                  uct_producer_stalled;
-    void                         *uct_producer_activation;
-    void                         *uct_consumer_activation;
-    qd_message_activation_type_t  uct_producer_activation_type;
-    qd_message_activation_type_t  uct_consumer_activation_type;
+    sys_atomic_t             uct_enabled;
+    qd_buffer_list_t         uct_slots[UCT_SLOT_COUNT];
+    sys_atomic_t             uct_produce_slot;
+    sys_atomic_t             uct_consume_slot;
+    sys_atomic_t             uct_producer_stalled;
+    qd_message_activation_t  uct_producer_activation;
+    qd_message_activation_t  uct_consumer_activation;
 } qd_message_content_t;
 
 struct qd_message_pvt_t {

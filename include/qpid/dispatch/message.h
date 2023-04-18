@@ -29,6 +29,8 @@
 
 #include <proton/raw_connection.h>
 
+typedef struct qdr_delivery_t qdr_delivery_t;
+
 /**@file
  * Message representation. 
  *
@@ -632,6 +634,10 @@ bool qd_message_oversize(const qd_message_t *msg);
 // This is an optimization for the case where the message is streaming and is being delivered to
 // exactly one destination.
 //=====================================================================================================
+
+#define UCT_SLOT_COUNT       8
+#define UCT_RESUME_THRESHOLD 4
+
 /**
  * Transition this message to unicast/cut-through operation.  This action cannot be reversed for a message.
  *
@@ -668,6 +674,14 @@ bool qd_message_can_produce_buffers(const qd_message_t *stream);
  * @return false No, there are no buffers to consumer
  */
 bool qd_message_can_consume_buffers(const qd_message_t *stream);
+
+/**
+ * Return the number of cut-through slots that are filled
+ * 
+ * @param stream Pointer to the message
+ * @return int The number of slots that contain produced content
+ */
+int qd_message_full_slot_count(const qd_message_t *stream);
 
 /**
  * Produce a list of buffers into the message stream.  The pn_message_can_produce_buffers must be
@@ -712,13 +726,19 @@ typedef enum {
     QD_ACTIVATION_RAW
 } qd_message_activation_type_t;
 
+typedef struct {
+    qd_message_activation_type_t  type;
+    void                         *handle;
+    qdr_delivery_t               *delivery;
+} qd_message_activation_t;
+
 /**
  * Tell the message stream which connection is consuming its buffers.
  *
  * @param stream Pointer to the message
  * @param connection Pointer to the qd_connection that is consuming this stream's buffers
  */
-void qd_message_set_consumer_activation(qd_message_t *stream, void *handle, qd_message_activation_type_t activation_type);
+void qd_message_set_consumer_activation(qd_message_t *stream, qd_message_activation_t *activation);
 
 /**
  * Return the connection that is consuming this message stream's buffers.
@@ -726,7 +746,7 @@ void qd_message_set_consumer_activation(qd_message_t *stream, void *handle, qd_m
  * @param stream Pointer to the message
  * @return qd_connection_t* Pointer to the connection that is consuming buffers from this stream
  */
-void qd_message_get_consumer_activation(const qd_message_t *stream, void **handle, qd_message_activation_type_t *activation_type);
+void qd_message_get_consumer_activation(const qd_message_t *stream, qd_message_activation_t *activation);
 
 /**
  * Tell the message stream which connection is producing its buffers.
@@ -734,7 +754,7 @@ void qd_message_get_consumer_activation(const qd_message_t *stream, void **handl
  * @param stream Pointer to the message
  * @param connection Pointer to the qd_connection that is consuming this stream's buffers
  */
-void qd_message_set_producer_activation(qd_message_t *stream, void *handle, qd_message_activation_type_t activation_type);
+void qd_message_set_producer_activation(qd_message_t *stream, qd_message_activation_t *activation);
 
 /**
  * Return the connection that is producing this message stream's buffers.
@@ -742,8 +762,7 @@ void qd_message_set_producer_activation(qd_message_t *stream, void *handle, qd_m
  * @param stream Pointer to the message
  * @return qd_connection_t* Pointer to the connection that is consuming buffers from this stream
  */
-void qd_message_get_producer_activation(const qd_message_t *stream, void **handle, qd_message_activation_type_t *activation_type);
-
+void qd_message_get_producer_activation(const qd_message_t *stream, qd_message_activation_t *activation);
 
 ///@}
 

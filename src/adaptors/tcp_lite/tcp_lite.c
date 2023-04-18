@@ -25,6 +25,7 @@
 #include <qpid/dispatch/protocol_adaptor.h>
 #include <qpid/dispatch/server.h>
 #include <qpid/dispatch/log.h>
+#include <qpid/dispatch/cutthrough_utils.h>
 #include <proton/proactor.h>
 #include <proton/raw_connection.h>
 #include <proton/listener.h>
@@ -430,25 +431,6 @@ static void free_connection_XSIDE_IO(tcplite_connection_t *conn)
 }
 
 
-static void activate_connection(void *activation_handle, qd_message_activation_type_t activation_type, qd_direction_t dir)
-{
-    switch (activation_type) {
-    case QD_ACTIVATION_NONE:
-        break;
-
-    case QD_ACTIVATION_AMQP:
-        sys_mutex_lock(qd_server_get_activation_lock(tcplite_context->server));
-        qd_server_activate_cutthrough((qd_connection_t*) activation_handle, dir == QD_INCOMING);
-        sys_mutex_unlock(qd_server_get_activation_lock(tcplite_context->server));
-        break;
-
-    case QD_ACTIVATION_RAW:
-        pn_raw_connection_wake((pn_raw_connection_t*) activation_handle);
-        break;
-    }
-}
-
-
 static void grant_read_buffers_IO(pn_raw_connection_t *raw_conn, const size_t count)
 {
     pn_raw_buffer_t raw_buffers[count];
@@ -495,14 +477,7 @@ static uint64_t produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_
         if (!DEQ_IS_EMPTY(qd_buffers)) {
             qd_log(tcplite_context->log_source, QD_LOG_TRACE, "produce_read_buffers_XSIDE_IO - Producing %ld buffers", DEQ_SIZE(qd_buffers));
             qd_message_produce_buffers(stream, &qd_buffers);
-
-            //
-            // Activate the consuming connection.
-            //
-            void                         *activation_handle;
-            qd_message_activation_type_t  activation_type;
-            qd_message_get_consumer_activation(stream, &activation_handle, &activation_type);
-            activate_connection(activation_handle, activation_type, QD_OUTGOING);
+            cutthrough_buffers_produced_inbound(stream);
         }
     } else {
         *blocked = true;
@@ -537,15 +512,7 @@ static uint64_t consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd
             pn_raw_connection_write_buffers(raw_conn, raw_buffers, actual);
         }
 
-        if (qd_message_resume_from_stalled(stream)) {
-            //
-            // Activate the producing connection
-            //
-            void                         *activation_handle;
-            qd_message_activation_type_t  activation_type;
-            qd_message_get_producer_activation(stream, &activation_handle, &activation_type);
-            activate_connection(activation_handle, activation_type, QD_INCOMING);
-        }
+        cutthrough_buffers_consumed_outbound(stream);
     }
 
     return octet_count;
@@ -701,7 +668,8 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
     // Start cut-through mode for this stream.
     //
     qd_message_start_unicast_cutthrough(conn->inbound_stream);
-    qd_message_set_producer_activation(conn->inbound_stream, conn->raw_conn, QD_ACTIVATION_RAW);
+    qd_message_activation_t activation = {QD_ACTIVATION_RAW, conn->raw_conn, 0};
+    qd_message_set_producer_activation(conn->inbound_stream, &activation);
 
     //
     // The delivery comes with a ref-count to protect the returned value.  Inherit that ref-count as the
@@ -762,7 +730,8 @@ static void compose_and_send_server_stream_CSIDE_IO(tcplite_connection_t *conn)
     // Start cut-through mode for this stream.
     //
     qd_message_start_unicast_cutthrough(conn->inbound_stream);
-    qd_message_set_producer_activation(conn->inbound_stream, conn->raw_conn, QD_ACTIVATION_RAW);
+    qd_message_activation_t activation = {QD_ACTIVATION_RAW, conn->raw_conn, 0};
+    qd_message_set_producer_activation(conn->inbound_stream, &activation);
 
     //
     // The delivery comes with a ref-count to protect the returned value.  Inherit that ref-count as the
@@ -809,7 +778,8 @@ static void handle_outbound_delivery_LSIDE(tcplite_connection_t *conn, qdr_link_
         // Note that we do not start_unicast_cutthrough here.  This is done in a more orderly way during
         // stream-content consumption.
         //
-        qd_message_set_consumer_activation(conn->outbound_stream, conn->raw_conn, QD_ACTIVATION_RAW);
+        qd_message_activation_t activation = {QD_ACTIVATION_RAW, conn->raw_conn, 0};
+        qd_message_set_consumer_activation(conn->outbound_stream, &activation);
 
         qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] LSIDE outbound delivery", conn->common.conn_id);
     }
@@ -868,7 +838,8 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
     // Note that we do not start_unicast_cutthrough here.  This is done in a more orderly way during
     // stream-content consumption.
     //
-    qd_message_set_consumer_activation(conn->outbound_stream, conn->raw_conn, QD_ACTIVATION_RAW);
+    qd_message_activation_t activation = {QD_ACTIVATION_RAW, conn->raw_conn, 0};
+    qd_message_set_consumer_activation(conn->outbound_stream, &activation);
 
     //
     // The raw connection establishment must be the last thing done in this function.
@@ -911,7 +882,7 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         //
         if (conn->inbound_disposition != 0) {
             qd_log(tcplite_context->log_source, QD_LOG_INFO, "[C%"PRIu64"] Raw connection error (%cSIDE) - closing inbound delivery", conn->common.conn_id, conn->listener_side ? 'L' : 'C');
-            free_connection_XSIDE_IO(conn);
+            pn_raw_connection_close(conn->raw_conn);
             return false;
         }
 
@@ -922,6 +893,10 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         uint64_t octet_count = produce_read_buffers_XSIDE_IO(conn->raw_conn, conn->inbound_stream, &blocked);
         conn->inbound_octets += octet_count;
         qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] %cSIDE Raw read: Produced %"PRIu64" octets into stream", conn->common.conn_id, conn->listener_side ? 'L' : 'C', octet_count);
+
+        if (octet_count > 0) {
+            cutthrough_buffers_produced_inbound(conn->inbound_stream);
+        }
 
         //
         // Manage latency measurements
@@ -985,6 +960,10 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
             uint64_t octets = consume_write_buffers_XSIDE_IO(conn->raw_conn, conn->outbound_stream);
             conn->outbound_octets += octets;
             qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] %cSIDE Raw write: Consumed %"PRIu64" octets from stream", conn->common.conn_id, conn->listener_side ? 'L' : 'C', octets);
+
+            if (octets > 0) {
+                cutthrough_buffers_consumed_outbound(conn->outbound_stream);
+            }
         }
 
         //

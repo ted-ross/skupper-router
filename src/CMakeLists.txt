@@ -65,6 +65,7 @@ set(qpid_dispatch_SOURCES
   ctools.c
   connection_manager.c
   container.c
+  cutthrough_utils.c
   delivery_state.c
   discriminator.c
   dispatch.c
