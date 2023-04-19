@@ -2124,7 +2124,7 @@ static uint64_t CORE_link_deliver(void *context, qdr_link_t *link, qdr_delivery_
     bool send_complete = qdr_delivery_send_complete(dlv);
 
     //
-    // If this message content has cut-through enabled, record the delivery in the connection's list of outgoing cut-through streams
+    // If this message content has cut-through enabled, set consumer activation in the message.
     //
     if (!send_complete && qd_message_is_unicast_cutthrough(msg_out)) {
         qd_message_activation_t activation;

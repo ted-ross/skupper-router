@@ -431,7 +431,7 @@ static void free_connection_XSIDE_IO(tcplite_connection_t *conn)
 }
 
 
-static void grant_read_buffers_IO(pn_raw_connection_t *raw_conn, const size_t count)
+static void grant_read_buffers_IO(tcplite_connection_t *conn, const size_t count)
 {
     pn_raw_buffer_t raw_buffers[count];
 
@@ -444,12 +444,12 @@ static void grant_read_buffers_IO(pn_raw_connection_t *raw_conn, const size_t co
         raw_buffers[i].size     = 0;
     }
 
-    qd_log(tcplite_context->log_source, QD_LOG_TRACE, "grant_read_buffers_IO - %ld", count);
-    pn_raw_connection_give_read_buffers(raw_conn, raw_buffers, count);
+    qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] grant_read_buffers_IO - %ld", conn->common.conn_id, count);
+    pn_raw_connection_give_read_buffers(conn->raw_conn, raw_buffers, count);
 }
 
 
-static uint64_t produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_message_t *stream, bool *blocked)
+static uint64_t produce_read_buffers_XSIDE_IO(tcplite_connection_t *conn, qd_message_t *stream, bool *blocked)
 {
     uint64_t octet_count = 0;
 
@@ -459,7 +459,7 @@ static uint64_t produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_
         pn_raw_buffer_t  raw_buffers[RAW_BUFFER_BATCH_SIZE];
         size_t           count;
 
-        count = pn_raw_connection_take_read_buffers(raw_conn, raw_buffers, RAW_BUFFER_BATCH_SIZE);
+        count = pn_raw_connection_take_read_buffers(conn->raw_conn, raw_buffers, RAW_BUFFER_BATCH_SIZE);
         while (count > 0) {
             for (size_t i = 0; i < count; i++) {
                 qd_buffer_t *buf = (qd_buffer_t*) raw_buffers[i].context;
@@ -471,11 +471,11 @@ static uint64_t produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_
                     qd_buffer_free(buf);
                 }
             }
-            count = pn_raw_connection_take_read_buffers(raw_conn, raw_buffers, RAW_BUFFER_BATCH_SIZE);
+            count = pn_raw_connection_take_read_buffers(conn->raw_conn, raw_buffers, RAW_BUFFER_BATCH_SIZE);
         }
 
         if (!DEQ_IS_EMPTY(qd_buffers)) {
-            qd_log(tcplite_context->log_source, QD_LOG_TRACE, "produce_read_buffers_XSIDE_IO - Producing %ld buffers", DEQ_SIZE(qd_buffers));
+            //qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] produce_read_buffers_XSIDE_IO - Producing %ld buffers", conn->common.conn_id, DEQ_SIZE(qd_buffers));
             qd_message_produce_buffers(stream, &qd_buffers);
             cutthrough_buffers_produced_inbound(stream);
         }
@@ -487,9 +487,9 @@ static uint64_t produce_read_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_
 }
 
 
-static uint64_t consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd_message_t *stream)
+static uint64_t consume_write_buffers_XSIDE_IO(tcplite_connection_t *conn, qd_message_t *stream)
 {
-    size_t   limit       = pn_raw_connection_write_buffers_capacity(raw_conn);
+    size_t   limit       = pn_raw_connection_write_buffers_capacity(conn->raw_conn);
     uint64_t octet_count = 0;
 
     if (limit > 0) {
@@ -508,8 +508,8 @@ static uint64_t consume_write_buffers_XSIDE_IO(pn_raw_connection_t *raw_conn, qd
                 octet_count += raw_buffers[i].size;
                 buf = DEQ_NEXT(buf);
             }
-            qd_log(tcplite_context->log_source, QD_LOG_TRACE, "consume_write_buffers_XSIDE_IO - Consuming %ld buffers", actual);
-            pn_raw_connection_write_buffers(raw_conn, raw_buffers, actual);
+            //qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] consume_write_buffers_XSIDE_IO - Consuming %ld buffers", conn->common.conn_id, actual);
+            pn_raw_connection_write_buffers(conn->raw_conn, raw_buffers, actual);
         }
 
         cutthrough_buffers_consumed_outbound(stream);
@@ -780,8 +780,6 @@ static void handle_outbound_delivery_LSIDE(tcplite_connection_t *conn, qdr_link_
         //
         qd_message_activation_t activation = {QD_ACTIVATION_RAW, conn->raw_conn, 0};
         qd_message_set_consumer_activation(conn->outbound_stream, &activation);
-
-        qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] LSIDE outbound delivery", conn->common.conn_id);
     }
 
     pn_raw_connection_wake(conn->raw_conn);  // TODO - make a direct call
@@ -890,11 +888,11 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         // Produce available read buffers into the inbound stream
         //
         bool blocked;
-        uint64_t octet_count = produce_read_buffers_XSIDE_IO(conn->raw_conn, conn->inbound_stream, &blocked);
+        uint64_t octet_count = produce_read_buffers_XSIDE_IO(conn, conn->inbound_stream, &blocked);
         conn->inbound_octets += octet_count;
-        qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] %cSIDE Raw read: Produced %"PRIu64" octets into stream", conn->common.conn_id, conn->listener_side ? 'L' : 'C', octet_count);
 
         if (octet_count > 0) {
+            qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] %cSIDE Raw read: Produced %"PRIu64" octets into stream", conn->common.conn_id, conn->listener_side ? 'L' : 'C', octet_count);
             cutthrough_buffers_produced_inbound(conn->inbound_stream);
         }
 
@@ -915,7 +913,7 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         // the inbound stream/delivery and close out the inbound half of the connection.
         //
         if (pn_raw_connection_is_read_closed(conn->raw_conn) && !blocked) {
-            qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] Read-closed - complete inbound delivery", conn->common.conn_id);
+            qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] Read-closed - close inbound delivery", conn->common.conn_id);
             qd_message_set_receive_complete(conn->inbound_stream);
             qdr_delivery_continue(tcplite_context->core, conn->inbound_delivery, true);
             qdr_delivery_set_context(conn->inbound_delivery, 0);
@@ -930,7 +928,7 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         //
         size_t capacity = pn_raw_connection_read_buffers_capacity(conn->raw_conn);
         if (qd_message_can_produce_buffers(conn->inbound_stream) && capacity > 0) {
-            grant_read_buffers_IO(conn->raw_conn, capacity);
+            grant_read_buffers_IO(conn, capacity);
         }
     }
 
@@ -950,18 +948,20 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         if (!conn->outbound_body_complete) {
             uint64_t body_octets = consume_message_body_XSIDE_IO(conn, conn->outbound_stream);
             conn->outbound_octets += body_octets;
-            qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] %cSIDE Raw write: Consumed %"PRIu64" octets from stream (body-field)", conn->common.conn_id, conn->listener_side ? 'L' : 'C', body_octets);
+            if (body_octets > 0) {
+                qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] %cSIDE Raw write: Consumed %"PRIu64" octets from stream (body-field)", conn->common.conn_id, conn->listener_side ? 'L' : 'C', body_octets);
+            }
         }
 
         //
         // Consume available write buffers from the outbound stream
         //
         if (conn->outbound_body_complete) {
-            uint64_t octets = consume_write_buffers_XSIDE_IO(conn->raw_conn, conn->outbound_stream);
+            uint64_t octets = consume_write_buffers_XSIDE_IO(conn, conn->outbound_stream);
             conn->outbound_octets += octets;
-            qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] %cSIDE Raw write: Consumed %"PRIu64" octets from stream", conn->common.conn_id, conn->listener_side ? 'L' : 'C', octets);
 
             if (octets > 0) {
+                qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] %cSIDE Raw write: Consumed %"PRIu64" octets from stream", conn->common.conn_id, conn->listener_side ? 'L' : 'C', octets);
                 cutthrough_buffers_consumed_outbound(conn->outbound_stream);
             }
         }
