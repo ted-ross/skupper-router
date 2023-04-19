@@ -314,6 +314,38 @@ static void qd_router_connection_get_config(const qd_connection_t  *conn,
 }
 
 
+static void clear_consumer_activation(qdr_core_t *core, qd_message_t *stream)
+{
+    qd_message_activation_t activation;
+    qd_message_get_consumer_activation(stream, &activation);
+    if (!!activation.delivery) {
+        activation.delivery->in_message_activation = false;
+        qdr_delivery_decref(core, activation.delivery, "Removing delivery from activation (out)");
+    }
+
+    activation.type     = QD_ACTIVATION_NONE;
+    activation.handle   = 0;
+    activation.delivery = 0;
+    qd_message_set_consumer_activation(stream, &activation);
+}
+
+
+static void clear_producer_activation(qdr_core_t *core, qd_message_t *stream)
+{
+    qd_message_activation_t activation;
+    qd_message_get_producer_activation(stream, &activation);
+    if (!!activation.delivery) {
+        activation.delivery->in_message_activation = false;
+        qdr_delivery_decref(core, activation.delivery, "Removing delivery from activation (in)");
+    }
+
+    activation.type     = QD_ACTIVATION_NONE;
+    activation.handle   = 0;
+    activation.delivery = 0;
+    qd_message_set_producer_activation(stream, &activation);
+}
+
+
 static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, void *context)
 {
     qdr_connection_t *qconn  = (qdr_connection_t*) qd_connection_get_context(conn);
@@ -374,16 +406,7 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
             // If the stream is send complete, we don't need to be activated any more.  Cancel the activation on the stream.
             //
             if (qd_message_send_complete(stream)) {
-                qd_message_activation_t activation;
-                qd_message_get_consumer_activation(stream, &activation);
-                if (!!activation.delivery) {
-                    qdr_delivery_decref(router->router_core, activation.delivery, "AMQP_conn_wake_handler - removing delivery from activation (out)");
-                }
-
-                activation.type     = QD_ACTIVATION_NONE;
-                activation.handle   = 0;
-                activation.delivery = 0;
-                qd_message_set_consumer_activation(stream, &activation);
+                clear_consumer_activation(router->router_core, stream);
             }
         }
     }
@@ -434,16 +457,7 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
             // If the stream is receive complete, we don't need to be activated any more.  Cancel the activation on the stream.
             //
             if (qd_message_receive_complete(stream)) {
-                qd_message_activation_t activation;
-                qd_message_get_producer_activation(stream, &activation);
-                if (!!activation.delivery) {
-                    qdr_delivery_decref(router->router_core, activation.delivery, "AMQP_conn_wake_handler - removing delivery from activation (in)");
-                }
-
-                activation.type     = QD_ACTIVATION_NONE;
-                activation.handle   = 0;
-                activation.delivery = 0;
-                qd_message_set_producer_activation(stream, &activation);
+                clear_producer_activation(router->router_core, stream);
             }
         }
     }
@@ -559,11 +573,12 @@ static bool AMQP_rx_handler(void* context, qd_link_t *link)
     qd_message_t   *msg   = qd_message_receive(pnd);
     bool receive_complete = qd_message_receive_complete(msg);
 
-    if (!receive_complete && !!delivery && qd_message_is_unicast_cutthrough(msg)) {
+    if (!receive_complete && !!delivery && !delivery->in_message_activation && qd_message_is_unicast_cutthrough(msg)) {
         qd_message_activation_t activation;
         activation.delivery = delivery;
         activation.handle   = conn;
         activation.type     = QD_ACTIVATION_AMQP;
+        delivery->in_message_activation = true;
         qdr_delivery_incref(delivery, "AMQP_rx_handler - Added to message activation");
         qd_message_set_producer_activation(msg, &activation);
     }
@@ -576,6 +591,7 @@ static bool AMQP_rx_handler(void* context, qd_link_t *link)
             //
             pn_link_advance(pn_link);
             next_delivery = pn_link_current(pn_link) != 0;
+            clear_producer_activation(router->router_core, msg);
         }
 
         if (qd_message_is_discard(msg)) {
@@ -2126,16 +2142,14 @@ static uint64_t CORE_link_deliver(void *context, qdr_link_t *link, qdr_delivery_
     //
     // If this message content has cut-through enabled, set consumer activation in the message.
     //
-    if (!send_complete && qd_message_is_unicast_cutthrough(msg_out)) {
+    if (!send_complete && !dlv->in_message_activation && qd_message_is_unicast_cutthrough(msg_out)) {
         qd_message_activation_t activation;
-        qd_message_get_consumer_activation(msg_out, &activation);
-        if (activation.type != QD_ACTIVATION_AMQP) {
-            activation.delivery = dlv;
-            activation.handle   = qconn;
-            activation.type     = QD_ACTIVATION_AMQP;
-            qdr_delivery_incref(dlv, "CORE_link_deliver - Added to message activation");
-            qd_message_set_consumer_activation(msg_out, &activation);
-        }
+        activation.delivery = dlv;
+        activation.handle   = qconn;
+        activation.type     = QD_ACTIVATION_AMQP;
+        dlv->in_message_activation = true;
+        qdr_delivery_incref(dlv, "CORE_link_deliver - Added to message activation");
+        qd_message_set_consumer_activation(msg_out, &activation);
     }
 
     if (q3_stalled) {
@@ -2169,6 +2183,7 @@ static uint64_t CORE_link_deliver(void *context, qdr_link_t *link, qdr_delivery_
                 }
             }
         }
+        clear_consumer_activation(router->router_core, msg_out);
         log_link_message(qconn, plink, msg_out);
     }
     return update;

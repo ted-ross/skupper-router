@@ -69,7 +69,7 @@ struct qdr_delivery_t {
     bool                    multicast;         /// True if this delivery is targeted for a multicast address.
     bool                    via_edge;          /// True if this delivery arrived via an edge-connection.
     bool                    stuck;             /// True if this delivery was counted as stuck.
-    bool                    in_cutthrough_worklist;
+    bool                    in_message_activation;
 };
 
 ALLOC_DECLARE(qdr_delivery_t);

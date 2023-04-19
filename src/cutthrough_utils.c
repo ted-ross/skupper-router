@@ -67,12 +67,9 @@ static void activate_connection(qd_message_activation_t *activation, qd_directio
 
 void cutthrough_buffers_produced_inbound(qd_message_t *msg)
 {
-    int depth = qd_message_full_slot_count(msg);
-    if (depth < UCT_RESUME_THRESHOLD) {
-        qd_message_activation_t activation;
-        qd_message_get_consumer_activation(msg, &activation);
-        activate_connection(&activation, QD_OUTGOING);
-    }
+    qd_message_activation_t activation;
+    qd_message_get_consumer_activation(msg, &activation);
+    activate_connection(&activation, QD_OUTGOING);
 }
 
 
