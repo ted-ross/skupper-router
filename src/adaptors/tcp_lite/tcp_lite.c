@@ -267,6 +267,19 @@ static void free_connection_XSIDE_IO(tcplite_connection_t *conn)
         qdr_link_detach(conn->inbound_link, QD_LOST, 0);
     }
 
+    qd_message_activation_t activation;
+    activation.type     = QD_ACTIVATION_NONE;
+    activation.handle   = 0;
+    activation.delivery = 0;
+
+    if (!!conn->inbound_stream) {
+        qd_message_set_producer_activation(conn->inbound_stream, &activation);
+    }
+
+    if (!!conn->outbound_stream) {
+        qd_message_set_consumer_activation(conn->outbound_stream, &activation);
+    }
+
     if (!!conn->inbound_delivery) {
         if (!!conn->inbound_stream) {
             qd_message_set_receive_complete(conn->inbound_stream);
