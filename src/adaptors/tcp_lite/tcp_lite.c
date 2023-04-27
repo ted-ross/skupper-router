@@ -30,134 +30,17 @@
 #include <proton/raw_connection.h>
 #include <proton/listener.h>
 
-#include "dispatch_private.h"
-#include "delivery.h"
-#include "adaptors/adaptor_common.h"
-#include "adaptors/adaptor_listener.h"
-
-typedef struct tcplite_common_t     tcplite_common_t;
-typedef struct tcplite_listener_t   tcplite_listener_t;
-typedef struct tcplite_connector_t  tcplite_connector_t;
-typedef struct tcplite_connection_t tcplite_connection_t;
-
-ALLOC_DECLARE(tcplite_listener_t);
-ALLOC_DECLARE(tcplite_connector_t);
-ALLOC_DECLARE(tcplite_connection_t);
-
-DEQ_DECLARE(tcplite_listener_t,   tcplite_listener_list_t);
-DEQ_DECLARE(tcplite_connector_t,  tcplite_connector_list_t);
-DEQ_DECLARE(tcplite_connection_t, tcplite_connection_list_t);
-
-
-typedef enum {
-    TL_LISTENER,
-    TL_CONNECTOR,
-    TL_CONNECTION
-} tcplite_context_type_t;
-
-struct tcplite_common_t {
-    tcplite_context_type_t  context_type;
-    tcplite_common_t       *parent;
-    vflow_record_t         *vflow;
-    qdr_connection_t       *core_conn;
-    uint64_t                conn_id;
-};
-
-struct tcplite_listener_t {
-    tcplite_common_t           common;
-    DEQ_LINKS(tcplite_listener_t);
-    sys_mutex_t                lock;
-    qd_timer_t                *activate_timer;
-    qd_adaptor_config_t        adaptor_config;
-    uint64_t                   link_id;
-    qdr_link_t                *in_link;
-    qd_adaptor_listener_t     *adaptor_listener;
-    tcplite_connection_list_t  connections;
-    uint64_t                   connections_opened;
-    uint64_t                   connections_closed;
-};
+#include "tcp_lite.h"
 
 ALLOC_DEFINE(tcplite_listener_t);
-
-
-typedef struct tcplite_connector_t {
-    tcplite_common_t           common;
-    DEQ_LINKS(tcplite_connector_t);
-    sys_mutex_t                lock;
-    qd_timer_t                *activate_timer;
-    qd_adaptor_config_t        adaptor_config;
-    uint64_t                   link_id;
-    qdr_link_t                *out_link;
-    tcplite_connection_list_t  connections;
-    uint64_t                   connections_opened;
-    uint64_t                   connections_closed;
-} tcplite_connector_t;
-
 ALLOC_DEFINE(tcplite_connector_t);
-
-
-typedef enum {
-    LSIDE_INITIAL,
-    LSIDE_LINK_SETUP,
-    LSIDE_STREAM_START,
-    LSIDE_FLOW,
-    CSIDE_INITIAL,
-    CSIDE_RAW_CONNECTION_OPENING,
-    CSIDE_LINK_SETUP,
-    CSIDE_FLOW
-} tcplite_connection_state_t;
-ENUM_DECLARE(tcplite_connection_state);
+ALLOC_DEFINE(tcplite_connection_t);
 
 static const char *state_names[] =
 { "LSIDE_INITIAL", "LSIDE_LINK_SETUP", "LSIDE_STREAM_START", "LSIDE_FLOW",
   "CSIDE_INITIAL", "CSIDE_RAW_CONNECTION_OPENING", "CSIDE_LINK_SETUP", "CSIDE_FLOW"
 };
 ENUM_DEFINE(tcplite_connection_state, state_names);
-
-#define RAW_BUFFER_BATCH_SIZE 16
-
-
-//
-// Important note about the polarity of the link/stream/delivery/disposition tuples:
-//
-//                   Listener Side      Connector Side
-//               +------------------+-------------------+
-//      Inbound  |      Client      |      Server       |
-//               +------------------+-------------------+
-//     Outbound  |      Server      |      Client       |
-//               +------------------+-------------------+
-//
-typedef struct tcplite_connection_t {
-    tcplite_common_t            common;
-    DEQ_LINKS(tcplite_connection_t);
-    pn_raw_connection_t        *raw_conn;
-    sys_atomic_t                core_activation;
-    sys_atomic_t                raw_opened;
-    qdr_link_t                 *inbound_link;
-    qd_message_t               *inbound_stream;
-    qdr_delivery_t             *inbound_delivery;
-    uint64_t                    inbound_disposition;
-    uint64_t                    inbound_link_id;
-    qdr_link_t                 *outbound_link;
-    qd_message_t               *outbound_stream;
-    qdr_delivery_t             *outbound_delivery;
-    uint64_t                    outbound_disposition;
-    uint64_t                    outbound_link_id;
-    uint64_t                    inbound_octets;
-    uint64_t                    outbound_octets;
-    qd_buffer_t                *outbound_body;
-    pn_condition_t             *error;
-    char                       *reply_to;
-    qd_handler_context_t        context;
-    tcplite_connection_state_t  state;
-    bool                        listener_side;
-    bool                        inbound_credit;
-    bool                        inbound_first_octet;
-    bool                        outbound_first_octet;
-    bool                        outbound_body_complete;
-} tcplite_connection_t;
-
-ALLOC_DEFINE(tcplite_connection_t);
 
 
 typedef struct {
@@ -408,7 +291,10 @@ static void free_connection_XSIDE_IO(tcplite_connection_t *conn)
     sys_atomic_destroy(&conn->core_activation);
     sys_atomic_destroy(&conn->raw_opened);
 
-    qdr_connection_closed(conn->common.core_conn);
+    if (!!conn->common.core_conn) {
+        qdr_connection_closed(conn->common.core_conn);
+        conn->common.core_conn = 0;
+    }
 
     vflow_set_uint64(conn->common.vflow, VFLOW_ATTRIBUTE_OCTETS, conn->inbound_octets);
     vflow_end_record(conn->common.vflow);
@@ -668,7 +554,7 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
     // Start cut-through mode for this stream.
     //
     qd_message_start_unicast_cutthrough(conn->inbound_stream);
-    qd_message_activation_t activation = {QD_ACTIVATION_RAW, conn->raw_conn, 0};
+    qd_message_activation_t activation = {QD_ACTIVATION_TCP, conn, 0};
     qd_message_set_producer_activation(conn->inbound_stream, &activation);
 
     //
@@ -730,7 +616,7 @@ static void compose_and_send_server_stream_CSIDE_IO(tcplite_connection_t *conn)
     // Start cut-through mode for this stream.
     //
     qd_message_start_unicast_cutthrough(conn->inbound_stream);
-    qd_message_activation_t activation = {QD_ACTIVATION_RAW, conn->raw_conn, 0};
+    qd_message_activation_t activation = {QD_ACTIVATION_TCP, conn, 0};
     qd_message_set_producer_activation(conn->inbound_stream, &activation);
 
     //
@@ -778,7 +664,7 @@ static void handle_outbound_delivery_LSIDE(tcplite_connection_t *conn, qdr_link_
         // Note that we do not start_unicast_cutthrough here.  This is done in a more orderly way during
         // stream-content consumption.
         //
-        qd_message_activation_t activation = {QD_ACTIVATION_RAW, conn->raw_conn, 0};
+        qd_message_activation_t activation = {QD_ACTIVATION_TCP, conn, 0};
         qd_message_set_consumer_activation(conn->outbound_stream, &activation);
     }
 
@@ -836,7 +722,7 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
     // Note that we do not start_unicast_cutthrough here.  This is done in a more orderly way during
     // stream-content consumption.
     //
-    qd_message_activation_t activation = {QD_ACTIVATION_RAW, conn->raw_conn, 0};
+    qd_message_activation_t activation = {QD_ACTIVATION_TCP, conn, 0};
     qd_message_set_consumer_activation(conn->outbound_stream, &activation);
 
     //
@@ -1104,7 +990,7 @@ static void on_connection_event_LSIDE_IO(pn_event_t *e, qd_server_t *qd_server, 
         return;
     }
 
-    if (CLEAR_ATOMIC_FLAG(&conn->core_activation)) {
+    if (CLEAR_ATOMIC_FLAG(&conn->core_activation) && !!conn->common.core_conn) {
         qdr_connection_process(conn->common.core_conn);
     }
 
@@ -1138,7 +1024,7 @@ static void on_connection_event_CSIDE_IO(pn_event_t *e, qd_server_t *qd_server, 
         }
     }
 
-    if (CLEAR_ATOMIC_FLAG(&conn->core_activation)) {
+    if (CLEAR_ATOMIC_FLAG(&conn->core_activation) && !!conn->common.core_conn) {
         qdr_connection_process(conn->common.core_conn);
     }
 

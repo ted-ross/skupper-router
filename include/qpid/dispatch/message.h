@@ -723,7 +723,7 @@ bool qd_message_resume_from_stalled(qd_message_t *stream);
 typedef enum {
     QD_ACTIVATION_NONE = 0,
     QD_ACTIVATION_AMQP,
-    QD_ACTIVATION_RAW
+    QD_ACTIVATION_TCP
 } qd_message_activation_type_t;
 
 typedef struct {

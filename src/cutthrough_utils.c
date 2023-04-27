@@ -22,6 +22,7 @@
 #include <proton/raw_connection.h>
 #include "delivery.h"
 #include "qd_connection.h"
+#include "adaptors/tcp_lite/tcp_lite.h"
 
 
 static void activate_connection(qd_message_activation_t *activation, qd_direction_t dir)
@@ -58,9 +59,13 @@ static void activate_connection(qd_message_activation_t *activation, qd_directio
         break;
     }
 
-    case QD_ACTIVATION_RAW:
-        pn_raw_connection_wake((pn_raw_connection_t*) activation->handle);
+    case QD_ACTIVATION_TCP: {
+        tcplite_connection_t *conn = (tcplite_connection_t*) activation->handle;
+        if (IS_ATOMIC_FLAG_SET(&conn->raw_opened)) {
+            pn_raw_connection_wake(conn->raw_conn);
+        }
         break;
+    }
     }
 }
 
