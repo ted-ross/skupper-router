@@ -54,6 +54,7 @@ typedef struct {
     qd_log_source_t           *log_source;
     sys_mutex_t                lock;
     pn_proactor_t             *proactor;
+    bool                       adaptor_finalizing;
 } tcplite_context_t;
 
 
@@ -253,15 +254,48 @@ static void set_state_IO(tcplite_connection_t *conn, tcplite_connection_state_t 
 }
 
 
-static void free_connection_XSIDE_IO(tcplite_connection_t *conn)
+static void free_connection_NOIO(void *context)
 {
-    free(conn->reply_to);
+    tcplite_connection_t *conn = (tcplite_connection_t*) context;
+
+    if (!!conn->common.parent && conn->common.parent->context_type == TL_LISTENER) {
+        tcplite_listener_t *li = (tcplite_listener_t*) conn->common.parent;
+        sys_mutex_lock(&li->lock);
+        DEQ_REMOVE(li->connections, conn);
+        li->connections_closed++;
+        sys_mutex_unlock(&li->lock);
+    } else {
+        tcplite_connector_t *cr = (tcplite_connector_t*) conn->common.parent;
+        sys_mutex_lock(&cr->lock);
+        DEQ_REMOVE(cr->connections, conn);
+        cr->connections_closed++;
+        sys_mutex_unlock(&cr->lock);
+    }
+
+    sys_atomic_destroy(&conn->core_activation);
+    sys_atomic_destroy(&conn->raw_opened);
+    qd_timer_free(conn->close_timer);
+    free_tcplite_connection_t(conn);
+}
+
+
+static void close_raw_connection_XSIDE_IO(tcplite_connection_t *conn)
+{
     if (!!conn->raw_conn) {
         CLEAR_ATOMIC_FLAG(&conn->raw_opened);
+        pn_raw_connection_close(conn->raw_conn);
         drain_read_buffers_IO(conn->raw_conn);
         drain_write_buffers_IO(conn->raw_conn);
-        pn_raw_connection_close(conn->raw_conn);
+        conn->raw_conn = 0;
     }
+}
+
+
+static void close_connection_XSIDE_IO(tcplite_connection_t *conn, bool no_delay)
+{
+    close_raw_connection_XSIDE_IO(conn);
+
+    free(conn->reply_to);
 
     if (!!conn->inbound_link) {
         qdr_link_detach(conn->inbound_link, QD_LOST, 0);
@@ -288,7 +322,7 @@ static void free_connection_XSIDE_IO(tcplite_connection_t *conn)
 
         qdr_delivery_remote_state_updated(tcplite_context->core, conn->inbound_delivery, 0, true, 0, false);
         qdr_delivery_set_context(conn->inbound_delivery, 0);
-        qdr_delivery_decref(tcplite_context->core, conn->inbound_delivery, "free_connection_XSIDE_IO - inbound_delivery");
+        qdr_delivery_decref(tcplite_context->core, conn->inbound_delivery, "close_connection_XSIDE_IO - inbound_delivery");
     }
 
     if (!!conn->outbound_link) {
@@ -298,35 +332,34 @@ static void free_connection_XSIDE_IO(tcplite_connection_t *conn)
     if (!!conn->outbound_delivery) {
         qdr_delivery_remote_state_updated(tcplite_context->core, conn->outbound_delivery, PN_MODIFIED, true, 0, false);
         qdr_delivery_set_context(conn->outbound_delivery, 0);
-        qdr_delivery_decref(tcplite_context->core, conn->outbound_delivery, "free_connection_XSIDE_IO - outbound_delivery");
+        qdr_delivery_decref(tcplite_context->core, conn->outbound_delivery, "close_connection_XSIDE_IO - outbound_delivery");
     }
-
-    sys_atomic_destroy(&conn->core_activation);
-    sys_atomic_destroy(&conn->raw_opened);
 
     if (!!conn->common.core_conn) {
         qdr_connection_closed(conn->common.core_conn);
-        conn->common.core_conn = 0;
     }
 
-    vflow_set_uint64(conn->common.vflow, VFLOW_ATTRIBUTE_OCTETS, conn->inbound_octets);
-    vflow_end_record(conn->common.vflow);
+    if (!!conn->common.vflow) {
+        vflow_set_uint64(conn->common.vflow, VFLOW_ATTRIBUTE_OCTETS, conn->inbound_octets);
+        vflow_end_record(conn->common.vflow);
+    }
 
-    if (!!conn->common.parent && conn->common.parent->context_type == TL_LISTENER) {
-        tcplite_listener_t *li = (tcplite_listener_t*) conn->common.parent;
-        sys_mutex_lock(&li->lock);
-        DEQ_REMOVE(li->connections, conn);
-        li->connections_closed++;
-        sys_mutex_unlock(&li->lock);
+    conn->reply_to          = 0;
+    conn->inbound_link      = 0;
+    conn->inbound_stream    = 0;
+    conn->inbound_delivery  = 0;
+    conn->outbound_link     = 0;
+    conn->outbound_stream   = 0;
+    conn->outbound_delivery = 0;
+    conn->common.core_conn  = 0;
+    conn->common.vflow      = 0;
+
+    if (no_delay) {
+        free_connection_NOIO(conn);
     } else {
-        tcplite_connector_t *cr = (tcplite_connector_t*) conn->common.parent;
-        sys_mutex_lock(&cr->lock);
-        DEQ_REMOVE(cr->connections, conn);
-        cr->connections_closed++;
-        sys_mutex_unlock(&cr->lock);
+        conn->close_timer = qd_timer(tcplite_context->qd, free_connection_NOIO, conn);
+        qd_timer_schedule(conn->close_timer, 10000);
     }
-
-    free_tcplite_connection_t(conn);
 }
 
 
@@ -779,7 +812,7 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         //
         if (conn->inbound_disposition != 0) {
             qd_log(tcplite_context->log_source, QD_LOG_INFO, "[C%"PRIu64"] Raw connection error (%cSIDE) - closing inbound delivery", conn->common.conn_id, conn->listener_side ? 'L' : 'C');
-            pn_raw_connection_close(conn->raw_conn);
+            close_raw_connection_XSIDE_IO(conn);
             return false;
         }
 
@@ -957,7 +990,7 @@ static bool connection_run_CSIDE_IO(tcplite_connection_t *conn)
             conn->outbound_link     = 0;
             conn->outbound_stream   = 0;
 
-            free_connection_XSIDE_IO(conn);
+            close_connection_XSIDE_IO(conn, false);
         } else if (!pn_raw_connection_is_read_closed(conn->raw_conn)) {
             link_setup_CSIDE_IO(conn, conn->outbound_delivery);
             set_state_IO(conn, CSIDE_LINK_SETUP);
@@ -999,7 +1032,7 @@ static void on_connection_event_LSIDE_IO(pn_event_t *e, qd_server_t *qd_server, 
      qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] on_connection_event_LSIDE_IO: %s", conn->common.conn_id, pn_event_type_name(pn_event_type(e)));
 
     if (pn_event_type(e) == PN_RAW_CONNECTION_DISCONNECTED) {
-        free_connection_XSIDE_IO(conn);
+        close_connection_XSIDE_IO(conn, false);
         return;
     }
 
@@ -1032,7 +1065,7 @@ static void on_connection_event_CSIDE_IO(pn_event_t *e, qd_server_t *qd_server, 
         }
         
         if (conn->state == CSIDE_FLOW || conn->state == CSIDE_LINK_SETUP) {
-            free_connection_XSIDE_IO(conn);
+            close_connection_XSIDE_IO(conn, false);
             return;
         }
     }
@@ -1304,7 +1337,7 @@ QD_EXPORT void qd_dispatch_delete_tcp_listener(qd_dispatch_t *qd, void *impl)
 
         tcplite_connection_t *conn = DEQ_HEAD(li->connections);
         while (conn) {
-            free_connection_XSIDE_IO(conn);
+            close_connection_XSIDE_IO(conn, tcplite_context->adaptor_finalizing);
             conn = DEQ_HEAD(li->connections);
         }
 
@@ -1385,7 +1418,7 @@ QD_EXPORT void qd_dispatch_delete_tcp_connector(qd_dispatch_t *qd, void *impl)
 
         tcplite_connection_t *conn = DEQ_HEAD(cr->connections);
         while (conn) {
-            free_connection_XSIDE_IO(conn);
+            close_connection_XSIDE_IO(conn, tcplite_context->adaptor_finalizing);
             conn = DEQ_HEAD(cr->connections);
         }
 
@@ -1456,6 +1489,8 @@ static void ADAPTOR_init(qdr_core_t *core, void **adaptor_context)
 
 static void ADAPTOR_final(void *adaptor_context)
 {
+    tcplite_context->adaptor_finalizing = true;
+
     while (DEQ_HEAD(tcplite_context->connectors)) {
         tcplite_connector_t *cr   = DEQ_HEAD(tcplite_context->connectors);
         qd_dispatch_delete_tcp_connector(tcplite_context->qd, cr);

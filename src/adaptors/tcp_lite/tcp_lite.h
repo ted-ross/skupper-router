@@ -113,6 +113,7 @@ typedef struct tcplite_connection_t {
     pn_raw_connection_t        *raw_conn;
     sys_atomic_t                core_activation;
     sys_atomic_t                raw_opened;
+    qd_timer_t                 *close_timer;
     qdr_link_t                 *inbound_link;
     qd_message_t               *inbound_stream;
     qdr_delivery_t             *inbound_delivery;
