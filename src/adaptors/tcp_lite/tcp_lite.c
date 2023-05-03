@@ -160,7 +160,7 @@ static void TL_setup_listener(tcplite_listener_t *li)
     // Attach an in-link to represent the desire to send connection streams to the address
     //
     qdr_terminus_t *target = qdr_terminus(0);
-    qdr_terminus_set_address(target, li->adaptor_config.address);
+    qdr_terminus_set_address(target, li->adaptor_config->address);
 
     li->in_link = qdr_link_first_attach(li->common.core_conn, QD_INCOMING, 0, target, "tcp.listener.in", 0, false, 0, &li->link_id);
     qdr_link_set_context(li->in_link, li);
@@ -170,10 +170,10 @@ static void TL_setup_listener(tcplite_listener_t *li)
     //
     li->common.vflow = vflow_start_record(VFLOW_RECORD_LISTENER, 0);
     vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_PROTOCOL,         "tcp");
-    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_NAME,             li->adaptor_config.name);
-    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_DESTINATION_HOST, li->adaptor_config.host);
-    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_DESTINATION_PORT, li->adaptor_config.port);
-    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_VAN_ADDRESS,      li->adaptor_config.address);
+    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_NAME,             li->adaptor_config->name);
+    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_DESTINATION_HOST, li->adaptor_config->host);
+    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_DESTINATION_PORT, li->adaptor_config->port);
+    vflow_set_string(li->common.vflow, VFLOW_ATTRIBUTE_VAN_ADDRESS,      li->adaptor_config->address);
     vflow_set_uint64(li->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4,    0);
     vflow_add_rate(li->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4, VFLOW_ATTRIBUTE_FLOW_RATE_L4);
 }
@@ -192,17 +192,17 @@ static void TL_setup_connector(tcplite_connector_t *cr)
     // Attach an out-link to represent our desire to receive connection streams for the address
     //
     qdr_terminus_t *source = qdr_terminus(0);
-    qdr_terminus_set_address(source, cr->adaptor_config.address);
+    qdr_terminus_set_address(source, cr->adaptor_config->address);
 
     //
     // Create a vflow record for this connector
     //
     cr->common.vflow = vflow_start_record(VFLOW_RECORD_CONNECTOR, 0);
     vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_PROTOCOL,         "tcp");
-    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_NAME,             cr->adaptor_config.name);
-    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_DESTINATION_HOST, cr->adaptor_config.host);
-    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_DESTINATION_PORT, cr->adaptor_config.port);
-    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_VAN_ADDRESS,      cr->adaptor_config.address);
+    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_NAME,             cr->adaptor_config->name);
+    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_DESTINATION_HOST, cr->adaptor_config->host);
+    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_DESTINATION_PORT, cr->adaptor_config->port);
+    vflow_set_string(cr->common.vflow, VFLOW_ATTRIBUTE_VAN_ADDRESS,      cr->adaptor_config->address);
     vflow_set_uint64(cr->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4,    0);
     vflow_add_rate(cr->common.vflow, VFLOW_ATTRIBUTE_FLOW_COUNT_L4, VFLOW_ATTRIBUTE_FLOW_RATE_L4);
 
@@ -521,7 +521,7 @@ static void link_setup_LSIDE_IO(tcplite_connection_t *conn)
     qdr_terminus_t *target = qdr_terminus(0);
     qdr_terminus_t *source = qdr_terminus(0);
 
-    qdr_terminus_set_address(target, li->adaptor_config.address);
+    qdr_terminus_set_address(target, li->adaptor_config->address);
     qdr_terminus_set_dynamic(source);
     
     conn->common.core_conn = TL_open_core_connection(conn->common.conn_id, true);
@@ -569,7 +569,7 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
         qd_compose_start_list(message);
         qd_compose_insert_null(message);                                // message-id
         qd_compose_insert_null(message);                                // user-id
-        qd_compose_insert_string(message, li->adaptor_config.address);  // to
+        qd_compose_insert_string(message, li->adaptor_config->address); // to
         qd_compose_insert_null(message);                                // subject
         qd_compose_insert_string(message, conn->reply_to);              // reply-to
         vflow_serialize_identity(conn->common.vflow, message);          // correlation-id
@@ -776,7 +776,7 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
     // After this call, a separate IO thread may immediately be invoked in the context
     // of the new connection to handle raw connection events.
     //
-    pn_proactor_raw_connect(tcplite_context->proactor, conn->raw_conn, cr->adaptor_config.host_port);
+    pn_proactor_raw_connect(tcplite_context->proactor, conn->raw_conn, cr->adaptor_config->host_port);
 }
 
 
@@ -1195,7 +1195,7 @@ static void CORE_flow(void *context, qdr_link_t *link, int credit)
             //
             // There is no adaptor listener.  We need to allocate one.
             //
-            li->adaptor_listener = qd_adaptor_listener(tcplite_context->qd, &li->adaptor_config, tcplite_context->log_source);
+            li->adaptor_listener = qd_adaptor_listener(tcplite_context->qd, li->adaptor_config, tcplite_context->log_source);
 
             //
             // Start listening on the socket
@@ -1303,7 +1303,9 @@ QD_EXPORT void *qd_dispatch_configure_tcp_listener(qd_dispatch_t *qd, qd_entity_
     tcplite_listener_t *li = new_tcplite_listener_t();
     ZERO(li);
 
-    if (qd_load_adaptor_config(&li->adaptor_config, entity) != QD_ERROR_NONE) {
+    li->adaptor_config = new_qd_adaptor_config_t();
+
+    if (qd_load_adaptor_config(li->adaptor_config, entity) != QD_ERROR_NONE) {
         qd_log(tcplite_context->log_source, QD_LOG_ERROR, "Unable to create tcp listener: %s", qd_error_message());
         free_tcplite_listener_t(li);
         return 0;
@@ -1311,7 +1313,7 @@ QD_EXPORT void *qd_dispatch_configure_tcp_listener(qd_dispatch_t *qd, qd_entity_
 
     qd_log(tcplite_context->log_source, QD_LOG_INFO,
             "Configured TcpListener for %s, %s:%s",
-            li->adaptor_config.address, li->adaptor_config.host, li->adaptor_config.port);
+            li->adaptor_config->address, li->adaptor_config->host, li->adaptor_config->port);
 
     li->activate_timer = qd_timer(tcplite_context->qd, on_core_activate_NOIO, li);
     li->common.context_type = TL_LISTENER;
@@ -1330,6 +1332,7 @@ QD_EXPORT void qd_dispatch_delete_tcp_listener(qd_dispatch_t *qd, void *impl)
 {
     tcplite_listener_t *li = (tcplite_listener_t*) impl;
     if (li) {
+        qdr_connection_closed(li->common.core_conn);
 
         sys_mutex_lock(&tcplite_context->lock);
         DEQ_REMOVE(tcplite_context->listeners, li);
@@ -1345,9 +1348,10 @@ QD_EXPORT void qd_dispatch_delete_tcp_listener(qd_dispatch_t *qd, void *impl)
 
         qd_log(tcplite_context->log_source, QD_LOG_INFO,
                "Deleted TcpListener for %s, %s:%s",
-               li->adaptor_config.address, li->adaptor_config.host, li->adaptor_config.port);
+               li->adaptor_config->address, li->adaptor_config->host, li->adaptor_config->port);
 
         qd_timer_free(li->activate_timer);
+        qd_free_adaptor_config(li->adaptor_config);
         free_tcplite_listener_t(li);
     }
 }
@@ -1386,7 +1390,9 @@ QD_EXPORT void *qd_dispatch_configure_tcp_connector(qd_dispatch_t *qd, qd_entity
     tcplite_connector_t *cr = new_tcplite_connector_t();
     ZERO(cr);
 
-    if (qd_load_adaptor_config(&cr->adaptor_config, entity) != QD_ERROR_NONE) {
+    cr->adaptor_config = new_qd_adaptor_config_t();
+
+    if (qd_load_adaptor_config(cr->adaptor_config, entity) != QD_ERROR_NONE) {
         qd_log(tcplite_context->log_source, QD_LOG_ERROR, "Unable to create tcp connector: %s", qd_error_message());
         free_tcplite_connector_t(cr);
         return 0;
@@ -1397,7 +1403,7 @@ QD_EXPORT void *qd_dispatch_configure_tcp_connector(qd_dispatch_t *qd, qd_entity
 
     qd_log(tcplite_context->log_source, QD_LOG_INFO,
             "Configured TcpConnector for %s, %s:%s",
-            cr->adaptor_config.address, cr->adaptor_config.host, cr->adaptor_config.port);
+            cr->adaptor_config->address, cr->adaptor_config->host, cr->adaptor_config->port);
 
     DEQ_INSERT_TAIL(tcplite_context->connectors, cr);
 
@@ -1411,6 +1417,7 @@ QD_EXPORT void qd_dispatch_delete_tcp_connector(qd_dispatch_t *qd, void *impl)
 {
     tcplite_connector_t *cr = (tcplite_connector_t*) impl;
     if (cr) {
+        qdr_connection_closed(cr->common.core_conn);
 
         sys_mutex_lock(&tcplite_context->lock);
         DEQ_REMOVE(tcplite_context->connectors, cr);
@@ -1426,9 +1433,10 @@ QD_EXPORT void qd_dispatch_delete_tcp_connector(qd_dispatch_t *qd, void *impl)
 
         qd_log(tcplite_context->log_source, QD_LOG_INFO,
                "Deleted TcpConnector for %s, %s:%s",
-               cr->adaptor_config.address, cr->adaptor_config.host, cr->adaptor_config.port);
+               cr->adaptor_config->address, cr->adaptor_config->host, cr->adaptor_config->port);
 
         qd_timer_free(cr->activate_timer);
+        qd_free_adaptor_config(cr->adaptor_config);
         free_tcplite_connector_t(cr);
     }
 }

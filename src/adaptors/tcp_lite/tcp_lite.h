@@ -58,7 +58,7 @@ struct tcplite_listener_t {
     DEQ_LINKS(tcplite_listener_t);
     sys_mutex_t                lock;
     qd_timer_t                *activate_timer;
-    qd_adaptor_config_t        adaptor_config;
+    qd_adaptor_config_t       *adaptor_config;
     uint64_t                   link_id;
     qdr_link_t                *in_link;
     qd_adaptor_listener_t     *adaptor_listener;
@@ -73,7 +73,7 @@ typedef struct tcplite_connector_t {
     DEQ_LINKS(tcplite_connector_t);
     sys_mutex_t                lock;
     qd_timer_t                *activate_timer;
-    qd_adaptor_config_t        adaptor_config;
+    qd_adaptor_config_t       *adaptor_config;
     uint64_t                   link_id;
     qdr_link_t                *out_link;
     tcplite_connection_list_t  connections;
