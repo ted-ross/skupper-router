@@ -736,7 +736,7 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
     conn->common.parent       = (tcplite_common_t*) cr;
 
     sys_atomic_init(&conn->core_activation, 0);
-    sys_atomic_init(&conn->raw_opened, 1);
+    sys_atomic_init(&conn->raw_opened, 0);
 
     conn->listener_side     = false;
     conn->state             = CSIDE_RAW_CONNECTION_OPENING;
@@ -777,6 +777,7 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
     // of the new connection to handle raw connection events.
     //
     pn_proactor_raw_connect(tcplite_context->proactor, conn->raw_conn, cr->adaptor_config->host_port);
+    SET_ATOMIC_FLAG(&conn->raw_opened);
 }
 
 
