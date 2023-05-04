@@ -812,7 +812,7 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         // the outbound side.  Close the raw connection.
         //
         if (conn->inbound_disposition != 0) {
-            qd_log(tcplite_context->log_source, QD_LOG_INFO, "[C%"PRIu64"] Raw connection error (%cSIDE) - closing inbound delivery", conn->common.conn_id, conn->listener_side ? 'L' : 'C');
+            qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] Raw connection error (%cSIDE) - closing inbound delivery", conn->common.conn_id, conn->listener_side ? 'L' : 'C');
             close_raw_connection_XSIDE_IO(conn);
             return false;
         }
@@ -1051,7 +1051,7 @@ static void on_connection_event_CSIDE_IO(pn_event_t *e, qd_server_t *qd_server, 
     qd_log(tcplite_context->log_source, QD_LOG_TRACE, "[C%"PRIu64"] on_connection_event_CSIDE_IO: %s", conn->common.conn_id, pn_event_type_name(pn_event_type(e)));
 
     if (pn_event_type(e) == PN_RAW_CONNECTION_DISCONNECTED) {
-        conn->error = pn_raw_connection_condition(conn->raw_conn);
+        conn->error = !!conn->raw_conn ? pn_raw_connection_condition(conn->raw_conn) : 0;
         
         if (!!conn->error) {
             const char *cname = pn_condition_get_name(conn->error);
