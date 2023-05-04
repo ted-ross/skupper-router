@@ -34,11 +34,11 @@ static void activate_connection(qd_message_activation_t *activation, qd_directio
     case QD_ACTIVATION_AMQP: {
         qd_connection_t         *qconn    = (qd_connection_t*) activation->handle;
         qdr_delivery_ref_t      *dref     = new_qdr_delivery_ref_t();
-        sys_spinlock_t          *spinlock = dir == QD_INCOMING ? &qconn->inbound_cutthrough_spinlock : &qconn->outbound_cutthrough_spinlock;
+        sys_mutex_t             *lock     = dir == QD_INCOMING ? &qconn->inbound_cutthrough_lock : &qconn->outbound_cutthrough_lock;
         qdr_delivery_ref_list_t *worklist = dir == QD_INCOMING ? &qconn->inbound_cutthrough_worklist : &qconn->outbound_cutthrough_worklist;
         bool                     notify   = false;
 
-        sys_spinlock_lock(spinlock);
+        sys_mutex_lock(lock);
         if (!activation->delivery->cutthrough_list_ref) {
             DEQ_ITEM_INIT(dref);
             dref->dlv = activation->delivery;
@@ -47,7 +47,7 @@ static void activate_connection(qd_message_activation_t *activation, qd_directio
             qdr_delivery_incref(activation->delivery, "Cut-through activation worklist");
             notify = true;
         }
-        sys_spinlock_unlock(spinlock);
+        sys_mutex_unlock(lock);
 
         if (notify) {
             //sys_mutex_lock(qd_server_get_activation_lock(tcplite_context->server));
