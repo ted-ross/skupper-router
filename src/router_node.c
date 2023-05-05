@@ -350,9 +350,10 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
 {
     qdr_connection_t *qconn  = (qdr_connection_t*) qd_connection_get_context(conn);
     qd_router_t      *router = (qd_router_t*) type_context;
+    int               result = 0;
 
     if (CLEAR_ATOMIC_FLAG(&conn->wake_core) && !!qconn) {
-        return qdr_connection_process(qconn);
+        result = qdr_connection_process(qconn);
     }
 
     if (CLEAR_ATOMIC_FLAG(&conn->wake_cutthrough_outbound)) {
@@ -462,7 +463,7 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
         }
     }
 
-    return 0;
+    return result;
 }
 
 
@@ -1147,24 +1148,49 @@ static int AMQP_link_flow_handler(void* context, qd_link_t *link)
             if (pn_session_outgoing_bytes(pn_ssn) < q3_lower) {
                 // yes.  We must now unblock all links that have been blocked by Q3
 
-                qd_link_list_t *blinks = qd_session_q3_blocked_links(qd_ssn);
-                qd_link_t *blink = DEQ_HEAD(*blinks);
+                qd_link_list_t  *blinks = qd_session_q3_blocked_links(qd_ssn);
+                qd_link_t       *blink  = DEQ_HEAD(*blinks);
+                qd_connection_t *conn   = qd_link_connection(blink);
+
                 while (blink) {
                     qd_link_q3_unblock(blink);  // removes from blinks list!
+                    pnlink = qd_link_pn(blink);
                     if (blink != link) {        // already flowed this link
                         rlink = (qdr_link_t *) qd_link_get_context(blink);
                         if (rlink) {
-                            pnlink = qd_link_pn(blink);
                             // signalling flow to the core causes the link to be re-activated
                             qdr_link_flow(router->router_core, rlink, pn_link_remote_credit(pnlink), pn_link_get_drain(pnlink));
                         }
                     }
+
+                    pn_delivery_t      *pdlv = pn_link_current(pnlink);
+                    qdr_delivery_t     *qdlv = qdr_node_delivery_qdr_from_pn(pdlv);
+                    qdr_delivery_ref_t *dref = new_qdr_delivery_ref_t();
+                    bool used = false;
+
+                    sys_mutex_lock(&conn->outbound_cutthrough_lock);
+                    if (!qdlv->cutthrough_list_ref) {
+                        DEQ_ITEM_INIT(dref);
+                        dref->dlv = qdlv;
+                        qdlv->cutthrough_list_ref = dref;
+                        DEQ_INSERT_TAIL(conn->outbound_cutthrough_worklist, dref);
+                        qdr_delivery_incref(qdlv, "Recover from Q3 stall");
+                        used = true;
+                    }
+                    sys_mutex_unlock(&conn->outbound_cutthrough_lock);
+
+                    if (!used) {
+                        free_qdr_delivery_ref_t(dref);
+                    }
+
                     blink = DEQ_HEAD(*blinks);
                 }
 
                 //
-                // TODO - wake the connection for outgoing cut-through
+                // Wake the connection for outgoing cut-through
                 //
+                SET_ATOMIC_FLAG(&conn->wake_cutthrough_outbound);
+                AMQP_conn_wake_handler(context, conn, 0);
             }
         }
     }
