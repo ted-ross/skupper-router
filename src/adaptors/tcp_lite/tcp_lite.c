@@ -948,9 +948,20 @@ static bool connection_run_LSIDE_IO(tcplite_connection_t *conn)
         //
         // If we have a reply-to address, compose the stream message, convert it to a
         // unicast/cut-through stream and send it.
-        // Set the state to LSIDE_FLOW.
+        // Set the state to LSIDE_STREAM_START and wait for the connector side to respond.
         //
         if (try_compose_and_send_client_stream_LSIDE_IO(conn)) {
+            set_state_IO(conn, LSIDE_STREAM_START);
+            repeat = true;
+        }
+        break;
+
+    case LSIDE_STREAM_START:
+        //
+        // If there is now an outbound stream, because the CSIDE sent a counter stream, switch to
+        // LSIDE_FLOW state and let the streaming begin.
+        //
+        if (!!conn->outbound_stream) {
             set_state_IO(conn, LSIDE_FLOW);
             repeat = true;
         }
@@ -983,12 +994,9 @@ static bool connection_run_CSIDE_IO(tcplite_connection_t *conn)
             //
             // If there was an error during the connection-open, reject the client delivery.
             //
-            qdr_delivery_remote_state_updated(tcplite_context->core, conn->outbound_delivery, PN_REJECTED, true, 0, false);
             qdr_delivery_set_context(conn->outbound_delivery, 0);
-            qdr_delivery_decref(tcplite_context->core, conn->outbound_delivery, "connection_run_CSIDE_IO - setup failure");
-            qdr_link_detach(conn->outbound_link, QD_LOST, 0);
+            qdr_delivery_remote_state_updated(tcplite_context->core, conn->outbound_delivery, PN_REJECTED, true, 0, true); // ref_given
             conn->outbound_delivery = 0;
-            conn->outbound_link     = 0;
             conn->outbound_stream   = 0;
 
             close_connection_XSIDE_IO(conn, false);
@@ -1268,7 +1276,7 @@ static void CORE_delivery_update(void *context, qdr_delivery_t *dlv, uint64_t di
 {
     bool              need_wake = false;
     tcplite_common_t *common = (tcplite_common_t*) qdr_delivery_get_context(dlv);
-    if (!!common && common->context_type == TL_CONNECTION && settled) {
+    if (!!common && common->context_type == TL_CONNECTION && disp != 0) {
         tcplite_connection_t *conn = (tcplite_connection_t*) common;
 
         if (dlv == conn->outbound_delivery) {
