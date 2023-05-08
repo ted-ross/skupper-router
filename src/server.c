@@ -607,8 +607,8 @@ qd_connection_t *qd_server_connection_impl(qd_server_t *server, qd_server_config
     sys_atomic_init(&ctx->wake_core, 0);
     sys_atomic_init(&ctx->wake_cutthrough_inbound, 0);
     sys_atomic_init(&ctx->wake_cutthrough_outbound, 0);
-    sys_mutex_init(&ctx->inbound_cutthrough_lock);
-    sys_mutex_init(&ctx->outbound_cutthrough_lock);
+    sys_spinlock_init(&ctx->inbound_cutthrough_spinlock);
+    sys_spinlock_init(&ctx->outbound_cutthrough_spinlock);
     pn_connection_set_context(ctx->pn_conn, ctx);
     DEQ_ITEM_INIT(ctx);
     DEQ_INIT(ctx->deferred_calls);
@@ -942,8 +942,8 @@ static void qd_connection_free(qd_connection_t *qd_conn)
     sys_atomic_destroy(&qd_conn->wake_core);
     sys_atomic_destroy(&qd_conn->wake_cutthrough_inbound);
     sys_atomic_destroy(&qd_conn->wake_cutthrough_outbound);
-    sys_mutex_free(&qd_conn->inbound_cutthrough_lock);
-    sys_mutex_free(&qd_conn->outbound_cutthrough_lock);
+    sys_spinlock_free(&qd_conn->inbound_cutthrough_spinlock);
+    sys_spinlock_free(&qd_conn->outbound_cutthrough_spinlock);
     sys_mutex_lock(&qd_server->conn_activation_lock);
     free_qd_connection_t(qd_conn);
     sys_mutex_unlock(&qd_server->conn_activation_lock);
@@ -1427,8 +1427,8 @@ void qd_server_free(qd_server_t *qd_server)
         sys_atomic_destroy(&ctx->wake_core);
         sys_atomic_destroy(&ctx->wake_cutthrough_inbound);
         sys_atomic_destroy(&ctx->wake_cutthrough_outbound);
-        sys_mutex_free(&ctx->inbound_cutthrough_lock);
-        sys_mutex_free(&ctx->outbound_cutthrough_lock);
+        sys_spinlock_free(&ctx->inbound_cutthrough_spinlock);
+        sys_spinlock_free(&ctx->outbound_cutthrough_spinlock);
 
         free_qd_connection_t(ctx);
         ctx = DEQ_HEAD(qd_server->conn_list);

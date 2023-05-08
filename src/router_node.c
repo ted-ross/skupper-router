@@ -362,15 +362,15 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
         //
         while (true) {
             //
-            // Under the protection of the lock, get the next delivery in the worklist
+            // Under the protection of the spinlock, get the next delivery in the worklist
             //
-            sys_mutex_lock(&conn->outbound_cutthrough_lock);
+            sys_spinlock_lock(&conn->outbound_cutthrough_spinlock);
             qdr_delivery_ref_t *dref = DEQ_HEAD(conn->outbound_cutthrough_worklist);
             if (!!dref) {
                 DEQ_REMOVE_HEAD(conn->outbound_cutthrough_worklist);
                 dref->dlv->cutthrough_list_ref = 0;
             }
-            sys_mutex_unlock(&conn->outbound_cutthrough_lock);
+            sys_spinlock_unlock(&conn->outbound_cutthrough_spinlock);
 
             //
             // If the worklist was empty, exit the loop
@@ -418,15 +418,15 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
         //
         while (true) {
             //
-            // Under the protection of the lock, get the next delivery in the worklist
+            // Under the protection of the spinlock, get the next delivery in the worklist
             //
-            sys_mutex_lock(&conn->inbound_cutthrough_lock);
+            sys_spinlock_lock(&conn->inbound_cutthrough_spinlock);
             qdr_delivery_ref_t *dref = DEQ_HEAD(conn->inbound_cutthrough_worklist);
             if (!!dref) {
                 DEQ_REMOVE_HEAD(conn->inbound_cutthrough_worklist);
                 dref->dlv->cutthrough_list_ref = 0;
             }
-            sys_mutex_unlock(&conn->inbound_cutthrough_lock);
+            sys_spinlock_unlock(&conn->inbound_cutthrough_spinlock);
 
             //
             // If the worklist was empty, exit the loop
