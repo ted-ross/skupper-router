@@ -90,7 +90,8 @@ typedef enum {
     CSIDE_INITIAL,
     CSIDE_RAW_CONNECTION_OPENING,
     CSIDE_LINK_SETUP,
-    CSIDE_FLOW
+    CSIDE_FLOW,
+    XSIDE_CLOSING
 } tcplite_connection_state_t;
 ENUM_DECLARE(tcplite_connection_state);
 
