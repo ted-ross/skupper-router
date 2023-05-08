@@ -1168,7 +1168,7 @@ static int AMQP_link_flow_handler(void* context, qd_link_t *link)
                     qdr_delivery_ref_t *dref = new_qdr_delivery_ref_t();
                     bool used = false;
 
-                    sys_mutex_lock(&conn->outbound_cutthrough_lock);
+                    sys_spinlock_lock(&conn->outbound_cutthrough_spinlock);
                     if (!qdlv->cutthrough_list_ref) {
                         DEQ_ITEM_INIT(dref);
                         dref->dlv = qdlv;
@@ -1177,7 +1177,7 @@ static int AMQP_link_flow_handler(void* context, qd_link_t *link)
                         qdr_delivery_incref(qdlv, "Recover from Q3 stall");
                         used = true;
                     }
-                    sys_mutex_unlock(&conn->outbound_cutthrough_lock);
+                    sys_spinlock_unlock(&conn->outbound_cutthrough_spinlock);
 
                     if (!used) {
                         free_qdr_delivery_ref_t(dref);

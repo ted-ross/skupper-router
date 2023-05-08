@@ -61,7 +61,8 @@ void sys_rwlock_unlock(sys_rwlock_t *lock);
 
 typedef struct sys_spinlock_t sys_spinlock_t;
 struct sys_spinlock_t {
-    pthread_spinlock_t lock;
+    pthread_mutexattr_t attr;
+    pthread_mutex_t     lock;
 };
 
 void sys_spinlock_init(sys_spinlock_t *lock);

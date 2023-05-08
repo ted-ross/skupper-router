@@ -134,28 +134,35 @@ void sys_rwlock_unlock(sys_rwlock_t *lock)
 
 void sys_spinlock_init(sys_spinlock_t *lock)
 {
-    int result = pthread_spin_init(&(lock->lock), PTHREAD_PROCESS_PRIVATE);
+    int result;
+    result = pthread_mutexattr_init(&lock->attr);
+    assert(result == 0);
+    result = pthread_mutexattr_settype(&lock->attr, PTHREAD_MUTEX_ADAPTIVE_NP);
+    assert(result == 0);
+    result = pthread_mutex_init(&lock->lock, &lock->attr);
     assert(result == 0);
 }
 
 
 void sys_spinlock_free(sys_spinlock_t *lock)
 {
-    int result = pthread_spin_destroy(&(lock->lock));
+    int result = pthread_mutex_destroy(&lock->lock);
+    assert(result == 0);
+    result = pthread_mutexattr_destroy(&lock->attr);
     assert(result == 0);
 }
 
 
 void sys_spinlock_lock(sys_spinlock_t *lock)
 {
-    int result = pthread_spin_lock(&(lock->lock));
+    int result = pthread_mutex_lock(&(lock->lock));
     assert(result == 0);
 }
 
 
 void sys_spinlock_unlock(sys_spinlock_t *lock)
 {
-    int result = pthread_spin_unlock(&(lock->lock));
+    int result = pthread_mutex_unlock(&(lock->lock));
     assert(result == 0);
 }
 
