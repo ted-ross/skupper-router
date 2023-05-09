@@ -66,6 +66,24 @@ static void connection_run_LSIDE_IO(tcplite_connection_t *conn);
 static void connection_run_CSIDE_IO(tcplite_connection_t *conn);
 static void connection_run_XSIDE_IO(tcplite_connection_t *conn);
 
+typedef enum {
+    THREAD_UNKNOWN,
+    THREAD_ROUTER_CORE,
+    THREAD_TIMER_IO,
+    THREAD_RAW_IO
+} tcplite_thread_state_t;
+
+__thread tcplite_thread_state_t tcplite_thread_state;
+
+#define SET_THREAD_UNKNOWN     tcplite_thread_state = THREAD_UNKNOWN
+#define SET_THREAD_ROUTER_CORE tcplite_thread_state = THREAD_ROUTER_CORE
+#define SET_THREAD_TIMER_IO    tcplite_thread_state = THREAD_TIMER_IO
+#define SET_THREAD_RAW_IO      tcplite_thread_state = THREAD_RAW_IO
+
+#define ASSERT_ROUTER_CORE assert(tcplite_thread_state == THREAD_ROUTER_CORE)
+#define ASSERT_TIMER_IO    assert(tcplite_thread_state == THREAD_TIMER_IO)
+#define ASSERT_RAW_IO      assert(tcplite_thread_state == THREAD_RAW_IO)
+
 
 //=================================================================================
 // Core Activation Handler
@@ -78,6 +96,7 @@ static void connection_run_XSIDE_IO(tcplite_connection_t *conn);
  */
 static void on_core_activate_NOIO(void *context)
 {
+    SET_THREAD_TIMER_IO;
     qdr_connection_t *core_conn = ((tcplite_common_t*) context)->core_conn;
     qdr_connection_process(core_conn);
 }
@@ -217,6 +236,7 @@ static void TL_setup_connector(tcplite_connector_t *cr)
 
 static void drain_read_buffers_IO(pn_raw_connection_t *raw_conn)
 {
+    ASSERT_RAW_IO;
     pn_raw_buffer_t  raw_buffers[RAW_BUFFER_BATCH_SIZE];
     size_t           count;
     size_t           drained = 0;
@@ -233,6 +253,7 @@ static void drain_read_buffers_IO(pn_raw_connection_t *raw_conn)
 
 static void drain_write_buffers_IO(pn_raw_connection_t *raw_conn)
 {
+    ASSERT_RAW_IO;
     pn_raw_buffer_t  raw_buffers[RAW_BUFFER_BATCH_SIZE];
     size_t           count;
     size_t           drained = 0;
@@ -251,6 +272,7 @@ static void drain_write_buffers_IO(pn_raw_connection_t *raw_conn)
 
 static void set_state_IO(tcplite_connection_t *conn, tcplite_connection_state_t new_state)
 {
+    ASSERT_RAW_IO;
     qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] State change %s -> %s",
            conn->common.conn_id, tcplite_connection_state_name(conn->state), tcplite_connection_state_name(new_state));
     conn->state = new_state;
@@ -259,6 +281,7 @@ static void set_state_IO(tcplite_connection_t *conn, tcplite_connection_state_t 
 
 static void free_connection_NOIO(void *context)
 {
+    // No thread assertion here - can be RAW_IO or TIMER_IO
     tcplite_connection_t *conn = (tcplite_connection_t*) context;
     qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] Cleaning up resources", conn->common.conn_id);
 
@@ -285,6 +308,7 @@ static void free_connection_NOIO(void *context)
 
 static void close_raw_connection_XSIDE_IO(tcplite_connection_t *conn)
 {
+    ASSERT_RAW_IO;
     if (conn->state != XSIDE_CLOSING) {
         set_state_IO(conn, XSIDE_CLOSING);
         if (!!conn->raw_conn) {
@@ -300,6 +324,7 @@ static void close_raw_connection_XSIDE_IO(tcplite_connection_t *conn)
 
 static void close_connection_XSIDE_IO(tcplite_connection_t *conn, bool no_delay)
 {
+    ASSERT_RAW_IO;
     close_raw_connection_XSIDE_IO(conn);
 
     free(conn->reply_to);
@@ -372,6 +397,7 @@ static void close_connection_XSIDE_IO(tcplite_connection_t *conn, bool no_delay)
 
 static void grant_read_buffers_IO(tcplite_connection_t *conn, const size_t count)
 {
+    ASSERT_RAW_IO;
     pn_raw_buffer_t raw_buffers[count];
 
     for (size_t i = 0; i < count; i++) {
@@ -390,6 +416,7 @@ static void grant_read_buffers_IO(tcplite_connection_t *conn, const size_t count
 
 static uint64_t produce_read_buffers_XSIDE_IO(tcplite_connection_t *conn, qd_message_t *stream, bool *blocked)
 {
+    ASSERT_RAW_IO;
     uint64_t octet_count = 0;
 
     if (qd_message_can_produce_buffers(stream)) {
@@ -428,6 +455,7 @@ static uint64_t produce_read_buffers_XSIDE_IO(tcplite_connection_t *conn, qd_mes
 
 static uint64_t consume_write_buffers_XSIDE_IO(tcplite_connection_t *conn, qd_message_t *stream)
 {
+    ASSERT_RAW_IO;
     size_t   limit       = pn_raw_connection_write_buffers_capacity(conn->raw_conn);
     uint64_t octet_count = 0;
 
@@ -460,6 +488,7 @@ static uint64_t consume_write_buffers_XSIDE_IO(tcplite_connection_t *conn, qd_me
 
 static uint64_t consume_message_body_XSIDE_IO(tcplite_connection_t *conn, qd_message_t *stream)
 {
+    ASSERT_RAW_IO;
     assert(!conn->outbound_body_complete);
 
     uint64_t octets = 0;
@@ -524,6 +553,7 @@ static uint64_t consume_message_body_XSIDE_IO(tcplite_connection_t *conn, qd_mes
 
 static void link_setup_LSIDE_IO(tcplite_connection_t *conn)
 {
+    ASSERT_RAW_IO;
     tcplite_listener_t *li = (tcplite_listener_t*) conn->common.parent;
     qdr_terminus_t *target = qdr_terminus(0);
     qdr_terminus_t *source = qdr_terminus(0);
@@ -545,6 +575,7 @@ static void link_setup_LSIDE_IO(tcplite_connection_t *conn)
 
 static void link_setup_CSIDE_IO(tcplite_connection_t *conn, qdr_delivery_t *delivery)
 {
+    ASSERT_RAW_IO;
     qdr_terminus_t *target = qdr_terminus(0);
 
     qdr_terminus_set_address(target, conn->reply_to);
@@ -561,6 +592,7 @@ static void link_setup_CSIDE_IO(tcplite_connection_t *conn, qdr_delivery_t *deli
 
 static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *conn)
 {
+    ASSERT_RAW_IO;
     tcplite_listener_t  *li = (tcplite_listener_t*) conn->common.parent;
     qd_composed_field_t *message = 0;
 
@@ -627,6 +659,7 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
 
 static void compose_and_send_server_stream_CSIDE_IO(tcplite_connection_t *conn)
 {
+    ASSERT_RAW_IO;
     qd_composed_field_t *message = 0;
 
     //
@@ -687,6 +720,7 @@ static void compose_and_send_server_stream_CSIDE_IO(tcplite_connection_t *conn)
 
 static void extract_metadata_from_stream_CSIDE(tcplite_connection_t *conn)
 {
+    ASSERT_TIMER_IO;
     qd_iterator_t *rt_iter = qd_message_field_iterator(conn->outbound_stream, QD_FIELD_REPLY_TO);
     qd_iterator_t *ci_iter = qd_message_field_iterator(conn->outbound_stream, QD_FIELD_CORRELATION_ID);
 
@@ -704,6 +738,7 @@ static void extract_metadata_from_stream_CSIDE(tcplite_connection_t *conn)
 
 static void handle_outbound_delivery_LSIDE(tcplite_connection_t *conn, qdr_link_t *link, qdr_delivery_t *delivery)
 {
+    ASSERT_RAW_IO;
     qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] handle_outbound_delivery_LSIDE - receive_complete=%s",
            conn->common.conn_id, qd_message_receive_complete(conn->outbound_stream) ? "true" : "false");
 
@@ -731,6 +766,7 @@ static void handle_outbound_delivery_LSIDE(tcplite_connection_t *conn, qdr_link_
  */
 static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_link_t *link, qdr_delivery_t *delivery)
 {
+    ASSERT_TIMER_IO;
     assert(!qdr_delivery_get_context(delivery));
 
     tcplite_connection_t *conn = new_tcplite_connection_t();
@@ -816,6 +852,7 @@ static void handle_outbound_delivery_CSIDE(tcplite_connection_t *conn, qdr_link_
  */
 static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
 {
+    ASSERT_RAW_IO;
     //
     // Inbound stream (producer-side) processing
     //
@@ -936,6 +973,7 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
 
 static void connection_run_LSIDE_IO(tcplite_connection_t *conn)
 {
+    ASSERT_RAW_IO;
     bool repeat;
 
     do {
@@ -1005,6 +1043,7 @@ static void connection_run_LSIDE_IO(tcplite_connection_t *conn)
 
 static void connection_run_CSIDE_IO(tcplite_connection_t *conn)
 {
+    ASSERT_RAW_IO;
     bool repeat;
     bool credit;
 
@@ -1072,6 +1111,7 @@ static void connection_run_CSIDE_IO(tcplite_connection_t *conn)
 
 static void connection_run_XSIDE_IO(tcplite_connection_t *conn)
 {
+    ASSERT_RAW_IO;
     if (conn->listener_side) {
         connection_run_LSIDE_IO(conn);
     } else {
@@ -1085,8 +1125,9 @@ static void connection_run_XSIDE_IO(tcplite_connection_t *conn)
 //=================================================================================
 static void on_connection_event_LSIDE_IO(pn_event_t *e, qd_server_t *qd_server, void *context)
 {
+    SET_THREAD_RAW_IO;
     tcplite_connection_t *conn = (tcplite_connection_t*) context;
-     qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] on_connection_event_LSIDE_IO: %s", conn->common.conn_id, pn_event_type_name(pn_event_type(e)));
+    qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] on_connection_event_LSIDE_IO: %s", conn->common.conn_id, pn_event_type_name(pn_event_type(e)));
 
     if (pn_event_type(e) == PN_RAW_CONNECTION_DISCONNECTED) {
         close_connection_XSIDE_IO(conn, false);
@@ -1103,6 +1144,7 @@ static void on_connection_event_LSIDE_IO(pn_event_t *e, qd_server_t *qd_server, 
 
 static void on_connection_event_CSIDE_IO(pn_event_t *e, qd_server_t *qd_server, void *context)
 {
+    SET_THREAD_RAW_IO;
     tcplite_connection_t *conn = (tcplite_connection_t*) context;
     qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] on_connection_event_CSIDE_IO: %s", conn->common.conn_id, pn_event_type_name(pn_event_type(e)));
 
@@ -1174,6 +1216,7 @@ void on_accept(qd_adaptor_listener_t *listener, pn_listener_t *pn_listener, void
 //=================================================================================
 static void CORE_activate(void *context, qdr_connection_t *core_conn)
 {
+    SET_THREAD_ROUTER_CORE;
     tcplite_common_t     *common = (tcplite_common_t*) qdr_connection_get_context(core_conn);
     tcplite_connection_t *conn;
 
@@ -1359,6 +1402,7 @@ static void CORE_connection_trace(void *context, qdr_connection_t *conn, bool tr
 //=================================================================================
 QD_EXPORT void *qd_dispatch_configure_tcp_listener(qd_dispatch_t *qd, qd_entity_t *entity)
 {
+    SET_THREAD_UNKNOWN;
     tcplite_listener_t *li = new_tcplite_listener_t();
     ZERO(li);
 
@@ -1389,6 +1433,7 @@ QD_EXPORT void *qd_dispatch_configure_tcp_listener(qd_dispatch_t *qd, qd_entity_
 
 QD_EXPORT void qd_dispatch_delete_tcp_listener(qd_dispatch_t *qd, void *impl)
 {
+    SET_THREAD_UNKNOWN;
     tcplite_listener_t *li = (tcplite_listener_t*) impl;
     if (li) {
         qdr_connection_closed(li->common.core_conn);
@@ -1418,6 +1463,7 @@ QD_EXPORT void qd_dispatch_delete_tcp_listener(qd_dispatch_t *qd, void *impl)
 
 QD_EXPORT qd_error_t qd_entity_refresh_tcpListener(qd_entity_t* entity, void *impl)
 {
+    SET_THREAD_UNKNOWN;
     tcplite_listener_t *li = (tcplite_listener_t*) impl;
 
     if (!!li->adaptor_listener) {
@@ -1446,6 +1492,7 @@ QD_EXPORT qd_error_t qd_entity_refresh_tcpListener(qd_entity_t* entity, void *im
 
 QD_EXPORT void *qd_dispatch_configure_tcp_connector(qd_dispatch_t *qd, qd_entity_t *entity)
 {
+    SET_THREAD_UNKNOWN;
     tcplite_connector_t *cr = new_tcplite_connector_t();
     ZERO(cr);
 
@@ -1474,6 +1521,7 @@ QD_EXPORT void *qd_dispatch_configure_tcp_connector(qd_dispatch_t *qd, qd_entity
 
 QD_EXPORT void qd_dispatch_delete_tcp_connector(qd_dispatch_t *qd, void *impl)
 {
+    SET_THREAD_UNKNOWN;
     tcplite_connector_t *cr = (tcplite_connector_t*) impl;
     if (cr) {
         qdr_connection_closed(cr->common.core_conn);
@@ -1503,6 +1551,7 @@ QD_EXPORT void qd_dispatch_delete_tcp_connector(qd_dispatch_t *qd, void *impl)
 
 QD_EXPORT qd_error_t qd_entity_refresh_tcpConnector(qd_entity_t* entity, void *impl)
 {
+    SET_THREAD_UNKNOWN;
     tcplite_connector_t *cr = (tcplite_connector_t*) impl;
 
     sys_mutex_lock(&cr->lock);
@@ -1527,6 +1576,7 @@ QD_EXPORT qd_error_t qd_entity_refresh_tcpConnector(qd_entity_t* entity, void *i
 //=================================================================================
 static void ADAPTOR_init(qdr_core_t *core, void **adaptor_context)
 {
+    SET_THREAD_UNKNOWN;
     tcplite_context = NEW(tcplite_context_t);
     ZERO(tcplite_context);
 
@@ -1556,6 +1606,7 @@ static void ADAPTOR_init(qdr_core_t *core, void **adaptor_context)
 
 static void ADAPTOR_final(void *adaptor_context)
 {
+    SET_THREAD_UNKNOWN;
     tcplite_context->adaptor_finalizing = true;
 
     while (DEQ_HEAD(tcplite_context->connectors)) {
