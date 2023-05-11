@@ -70,7 +70,7 @@ static void activate_connection(qd_message_activation_t *activation, qd_directio
 }
 
 
-void cutthrough_buffers_produced_inbound(qd_message_t *msg)
+void cutthrough_notify_buffers_produced_inbound(qd_message_t *msg)
 {
     qd_message_activation_t activation;
     qd_message_get_consumer_activation(msg, &activation);
@@ -78,7 +78,7 @@ void cutthrough_buffers_produced_inbound(qd_message_t *msg)
 }
 
 
-void cutthrough_buffers_consumed_outbound(qd_message_t *msg)
+void cutthrough_notify_buffers_consumed_outbound(qd_message_t *msg)
 {
     bool unstall = qd_message_resume_from_stalled(msg);
     if (unstall) {

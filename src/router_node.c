@@ -401,7 +401,7 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
             //
             // Handle any subsequent activation that is needed
             //
-            cutthrough_buffers_consumed_outbound(stream);
+            cutthrough_notify_buffers_consumed_outbound(stream);
 
             //
             // If the stream is send complete, we don't need to be activated any more.  Cancel the activation on the stream.
@@ -452,7 +452,7 @@ static int AMQP_conn_wake_handler(void *type_context, qd_connection_t *conn, voi
             //
             // Handle any subsequent activation that is needed
             //
-            cutthrough_buffers_produced_inbound(stream);
+            cutthrough_notify_buffers_produced_inbound(stream);
 
             //
             // If the stream is receive complete, we don't need to be activated any more.  Cancel the activation on the stream.
@@ -669,7 +669,7 @@ static bool AMQP_rx_handler(void* context, qd_link_t *link)
 
     if (delivery) {
         if (qd_message_is_unicast_cutthrough(msg)) {
-            cutthrough_buffers_produced_inbound(msg);
+            cutthrough_notify_buffers_produced_inbound(msg);
 
             if (receive_complete) {
                 qdr_delivery_continue(router->router_core, delivery, pn_delivery_settled(pnd));

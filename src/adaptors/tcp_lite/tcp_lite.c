@@ -465,7 +465,7 @@ static uint64_t produce_read_buffers_XSIDE_IO(tcplite_connection_t *conn, qd_mes
         if (!DEQ_IS_EMPTY(qd_buffers)) {
             //qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] produce_read_buffers_XSIDE_IO - Producing %ld buffers", conn->common.conn_id, DEQ_SIZE(qd_buffers));
             qd_message_produce_buffers(stream, &qd_buffers);
-            cutthrough_buffers_produced_inbound(stream);
+            cutthrough_notify_buffers_produced_inbound(stream);
         }
     } else {
         *blocked = true;
@@ -499,9 +499,8 @@ static uint64_t consume_write_buffers_XSIDE_IO(tcplite_connection_t *conn, qd_me
             }
             //qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] consume_write_buffers_XSIDE_IO - Consuming %ld buffers", conn->common.conn_id, actual);
             pn_raw_connection_write_buffers(conn->raw_conn, raw_buffers, actual);
+            cutthrough_notify_buffers_consumed_outbound(stream);
         }
-
-        cutthrough_buffers_consumed_outbound(stream);
     }
 
     return octet_count;
@@ -888,7 +887,6 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
 
         if (octet_count > 0) {
             qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] %cSIDE Raw read: Produced %"PRIu64" octets into stream", conn->common.conn_id, conn->listener_side ? 'L' : 'C', octet_count);
-            cutthrough_buffers_produced_inbound(conn->inbound_stream);
         }
 
         //
@@ -957,7 +955,6 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
 
             if (octets > 0) {
                 qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] %cSIDE Raw write: Consumed %"PRIu64" octets from stream", conn->common.conn_id, conn->listener_side ? 'L' : 'C', octets);
-                cutthrough_buffers_consumed_outbound(conn->outbound_stream);
             }
         }
 

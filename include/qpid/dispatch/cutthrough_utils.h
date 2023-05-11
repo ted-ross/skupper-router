@@ -27,7 +27,7 @@
  * 
  * @param msg - Pointer to a stream
  */
-void cutthrough_buffers_produced_inbound(qd_message_t *msg);
-void cutthrough_buffers_consumed_outbound(qd_message_t *msg);
+void cutthrough_notify_buffers_produced_inbound(qd_message_t *msg);
+void cutthrough_notify_buffers_consumed_outbound(qd_message_t *msg);
 
 #endif
