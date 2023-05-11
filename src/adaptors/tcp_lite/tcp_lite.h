@@ -95,8 +95,6 @@ typedef enum {
 } tcplite_connection_state_t;
 ENUM_DECLARE(tcplite_connection_state);
 
-#define RAW_BUFFER_BATCH_SIZE 16
-
 
 //
 // Important note about the polarity of the link/stream/delivery/disposition tuples:
