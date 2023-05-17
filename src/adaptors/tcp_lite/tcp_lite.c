@@ -371,7 +371,7 @@ static void close_connection_XSIDE_IO(tcplite_connection_t *conn, bool no_delay)
     if (!!conn->inbound_delivery) {
         if (!!conn->inbound_stream) {
             qd_message_set_receive_complete(conn->inbound_stream);
-            qdr_delivery_continue(tcplite_context->core, conn->inbound_delivery, true);
+            qdr_delivery_continue(tcplite_context->core, conn->inbound_delivery, false);
         }
 
         qdr_delivery_remote_state_updated(tcplite_context->core, conn->inbound_delivery, 0, true, 0, false);
@@ -908,7 +908,7 @@ static bool manage_flow_XSIDE_IO(tcplite_connection_t *conn)
         if (pn_raw_connection_is_read_closed(conn->raw_conn) && !blocked) {
             qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] Read-closed - close inbound delivery", conn->common.conn_id);
             qd_message_set_receive_complete(conn->inbound_stream);
-            qdr_delivery_continue(tcplite_context->core, conn->inbound_delivery, true);
+            qdr_delivery_continue(tcplite_context->core, conn->inbound_delivery, false);
             qdr_delivery_set_context(conn->inbound_delivery, 0);
             qdr_delivery_decref(tcplite_context->core, conn->inbound_delivery, "TCP_LSIDE_IO - read-close");
             conn->inbound_delivery = 0;
@@ -998,15 +998,6 @@ static void connection_run_LSIDE_IO(tcplite_connection_t *conn)
     do {
         repeat = false;
 
-        //
-        // If the inbound stream is settled by the peer, there's been an abnormal close on
-        // the outbound side.  Close the raw connection.
-        //
-        if (conn->inbound_disposition != 0) {
-            close_raw_connection_XSIDE_IO(conn);
-            return;
-        }
-
         switch (conn->state) {
         case LSIDE_INITIAL:
             //
@@ -1069,15 +1060,6 @@ static void connection_run_CSIDE_IO(tcplite_connection_t *conn)
     do {
         repeat = false;
 
-        //
-        // If the inbound stream is settled by the peer, there's been an abnormal close on
-        // the outbound side.  Close the raw connection.
-        //
-        if (conn->inbound_disposition != 0) {
-            close_raw_connection_XSIDE_IO(conn);
-            return;
-        }
-
         switch (conn->state) {
         case CSIDE_RAW_CONNECTION_OPENING:
             if (!!conn->error && !!conn->outbound_delivery) {
@@ -1131,6 +1113,22 @@ static void connection_run_CSIDE_IO(tcplite_connection_t *conn)
 static void connection_run_XSIDE_IO(tcplite_connection_t *conn)
 {
     ASSERT_RAW_IO;
+    //
+    // If the inbound stream has a non-zero disposition, there's been an abnormal event on
+    // the outbound side of that stream.  Close the raw connection and close out the inbound stuff.
+    //
+    if (conn->inbound_disposition != 0) {
+        if (!!conn->inbound_delivery && !!conn->inbound_stream) {
+            qd_message_set_send_complete(conn->inbound_stream);
+            qdr_delivery_continue(tcplite_context->core, conn->inbound_delivery, true);
+            qdr_delivery_decref(tcplite_context->core, conn->inbound_delivery, "TCPLITE Closing inbound delivery on error");
+            conn->inbound_delivery = 0;
+            conn->inbound_stream   = 0;
+        }
+        close_raw_connection_XSIDE_IO(conn);
+        return;
+    }
+
     if (conn->listener_side) {
         connection_run_LSIDE_IO(conn);
     } else {
