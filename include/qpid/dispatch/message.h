@@ -728,7 +728,7 @@ typedef enum {
 
 typedef struct {
     qd_message_activation_type_t  type;
-    void                         *handle;
+    qd_alloc_safe_ptr_t           safeptr;
     qdr_delivery_t               *delivery;
 } qd_message_activation_t;
 

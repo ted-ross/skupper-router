@@ -32,7 +32,12 @@ static void activate_connection(qd_message_activation_t *activation, qd_directio
         break;
 
     case QD_ACTIVATION_AMQP: {
-        qd_connection_t         *qconn    = (qd_connection_t*) activation->handle;
+        qd_connection_t *qconn = safe_deref_qd_connection_t(activation->safeptr);
+
+        if (!qconn) {
+            return;
+        }
+
         qdr_delivery_ref_t      *dref     = new_qdr_delivery_ref_t();
         sys_spinlock_t          *spinlock = dir == QD_INCOMING ? &qconn->inbound_cutthrough_spinlock : &qconn->outbound_cutthrough_spinlock;
         qdr_delivery_ref_list_t *worklist = dir == QD_INCOMING ? &qconn->inbound_cutthrough_worklist : &qconn->outbound_cutthrough_worklist;
@@ -50,9 +55,7 @@ static void activate_connection(qd_message_activation_t *activation, qd_directio
         sys_spinlock_unlock(spinlock);
 
         if (notify) {
-            //sys_mutex_lock(qd_server_get_activation_lock(tcplite_context->server));
             qd_server_activate_cutthrough(qconn, dir == QD_INCOMING);
-            //sys_mutex_unlock(qd_server_get_activation_lock(tcplite_context->server));
         } else {
             free_qdr_delivery_ref_t(dref);
         }
@@ -60,8 +63,8 @@ static void activate_connection(qd_message_activation_t *activation, qd_directio
     }
 
     case QD_ACTIVATION_TCP: {
-        tcplite_connection_t *conn = (tcplite_connection_t*) activation->handle;
-        if (IS_ATOMIC_FLAG_SET(&conn->raw_opened)) {
+        tcplite_connection_t *conn = safe_deref_tcplite_connection_t(activation->safeptr);
+        if (!!conn && IS_ATOMIC_FLAG_SET(&conn->raw_opened)) {
             pn_raw_connection_wake(conn->raw_conn);
         }
         break;

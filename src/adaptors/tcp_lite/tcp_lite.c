@@ -357,8 +357,8 @@ static void close_connection_XSIDE_IO(tcplite_connection_t *conn, bool no_delay)
 
     qd_message_activation_t activation;
     activation.type     = QD_ACTIVATION_NONE;
-    activation.handle   = 0;
     activation.delivery = 0;
+    qd_nullify_safe_ptr(&activation.safeptr);
 
     if (!!conn->inbound_stream) {
         qd_message_set_producer_activation(conn->inbound_stream, &activation);
@@ -660,7 +660,10 @@ static bool try_compose_and_send_client_stream_LSIDE_IO(tcplite_connection_t *co
     // Start cut-through mode for this stream.
     //
     qd_message_start_unicast_cutthrough(conn->inbound_stream);
-    qd_message_activation_t activation = {QD_ACTIVATION_TCP, conn, 0};
+    qd_message_activation_t activation;
+    activation.type     = QD_ACTIVATION_TCP;
+    activation.delivery = 0;
+    qd_alloc_set_safe_ptr(&activation.safeptr, conn);
     qd_message_set_producer_activation(conn->inbound_stream, &activation);
 
     //
@@ -723,7 +726,10 @@ static void compose_and_send_server_stream_CSIDE_IO(tcplite_connection_t *conn)
     // Start cut-through mode for this stream.
     //
     qd_message_start_unicast_cutthrough(conn->inbound_stream);
-    qd_message_activation_t activation = {QD_ACTIVATION_TCP, conn, 0};
+    qd_message_activation_t activation;
+    activation.type     = QD_ACTIVATION_TCP;
+    activation.delivery = 0;
+    qd_alloc_set_safe_ptr(&activation.safeptr, conn);
     qd_message_set_producer_activation(conn->inbound_stream, &activation);
 
     //
@@ -773,7 +779,10 @@ static void handle_outbound_delivery_LSIDE_IO(tcplite_connection_t *conn, qdr_li
         // Note that we do not start_unicast_cutthrough here.  This is done in a more orderly way during
         // stream-content consumption.
         //
-        qd_message_activation_t activation = {QD_ACTIVATION_TCP, conn, 0};
+        qd_message_activation_t activation;
+        activation.type     = QD_ACTIVATION_TCP;
+        activation.delivery = 0;
+        qd_alloc_set_safe_ptr(&activation.safeptr, conn);
         qd_message_set_consumer_activation(conn->outbound_stream, &activation);
     }
 
@@ -832,7 +841,10 @@ static void handle_first_outbound_delivery_CSIDE(tcplite_connector_t *cr, qdr_li
     // Note that we do not start_unicast_cutthrough here.  This is done in a more orderly way during
     // stream-content consumption.
     //
-    qd_message_activation_t activation = {QD_ACTIVATION_TCP, conn, 0};
+    qd_message_activation_t activation;
+    activation.type     = QD_ACTIVATION_TCP;
+    activation.delivery = 0;
+    qd_alloc_set_safe_ptr(&activation.safeptr, conn);
     qd_message_set_consumer_activation(conn->outbound_stream, &activation);
 
     //

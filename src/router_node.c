@@ -324,8 +324,8 @@ static void clear_consumer_activation(qdr_core_t *core, qd_message_t *stream)
     }
 
     activation.type     = QD_ACTIVATION_NONE;
-    activation.handle   = 0;
     activation.delivery = 0;
+    qd_nullify_safe_ptr(&activation.safeptr);
     qd_message_set_consumer_activation(stream, &activation);
 }
 
@@ -340,8 +340,8 @@ static void clear_producer_activation(qdr_core_t *core, qd_message_t *stream)
     }
 
     activation.type     = QD_ACTIVATION_NONE;
-    activation.handle   = 0;
     activation.delivery = 0;
+    qd_nullify_safe_ptr(&activation.safeptr);
     qd_message_set_producer_activation(stream, &activation);
 }
 
@@ -577,8 +577,8 @@ static bool AMQP_rx_handler(void* context, qd_link_t *link)
     if (!receive_complete && !!delivery && !delivery->in_message_activation && qd_message_is_unicast_cutthrough(msg)) {
         qd_message_activation_t activation;
         activation.delivery = delivery;
-        activation.handle   = conn;
         activation.type     = QD_ACTIVATION_AMQP;
+        qd_alloc_set_safe_ptr(&activation.safeptr, conn);
         delivery->in_message_activation = true;
         qdr_delivery_incref(delivery, "AMQP_rx_handler - Added to message activation");
         qd_message_set_producer_activation(msg, &activation);
@@ -2171,8 +2171,8 @@ static uint64_t CORE_link_deliver(void *context, qdr_link_t *link, qdr_delivery_
     if (!send_complete && !dlv->in_message_activation && qd_message_is_unicast_cutthrough(msg_out)) {
         qd_message_activation_t activation;
         activation.delivery = dlv;
-        activation.handle   = qconn;
         activation.type     = QD_ACTIVATION_AMQP;
+        qd_alloc_set_safe_ptr(&activation.safeptr, qconn);
         dlv->in_message_activation = true;
         qdr_delivery_incref(dlv, "CORE_link_deliver - Added to message activation");
         qd_message_set_consumer_activation(msg_out, &activation);
