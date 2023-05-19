@@ -65,6 +65,7 @@ struct tcplite_listener_t {
     tcplite_connection_list_t  connections;
     uint64_t                   connections_opened;
     uint64_t                   connections_closed;
+    bool                       closing;
 };
 
 
@@ -79,6 +80,7 @@ typedef struct tcplite_connector_t {
     tcplite_connection_list_t  connections;
     uint64_t                   connections_opened;
     uint64_t                   connections_closed;
+    bool                       closing;
 } tcplite_connector_t;
 
 

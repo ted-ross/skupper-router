@@ -102,9 +102,9 @@ __thread tcplite_thread_state_t tcplite_thread_state;
 #define SET_THREAD_TIMER_IO    tcplite_thread_state = THREAD_TIMER_IO
 #define SET_THREAD_RAW_IO      tcplite_thread_state = THREAD_RAW_IO
 
-#define ASSERT_ROUTER_CORE assert(tcplite_thread_state == THREAD_ROUTER_CORE)
-#define ASSERT_TIMER_IO    assert(tcplite_thread_state == THREAD_TIMER_IO)
-#define ASSERT_RAW_IO      assert(tcplite_thread_state == THREAD_RAW_IO)
+#define ASSERT_ROUTER_CORE assert(tcplite_thread_state == THREAD_ROUTER_CORE || tcplite_context->adaptor_finalizing)
+#define ASSERT_TIMER_IO    assert(tcplite_thread_state == THREAD_TIMER_IO    || tcplite_context->adaptor_finalizing)
+#define ASSERT_RAW_IO      assert(tcplite_thread_state == THREAD_RAW_IO      || tcplite_context->adaptor_finalizing)
 
 
 //=================================================================================
@@ -301,9 +301,48 @@ static void set_state_XSIDE_IO(tcplite_connection_t *conn, tcplite_connection_st
 }
 
 
+static void free_listener(tcplite_listener_t *li)
+{
+    sys_mutex_lock(&tcplite_context->lock);
+    DEQ_REMOVE(tcplite_context->listeners, li);
+    sys_mutex_unlock(&tcplite_context->lock);
+
+    vflow_end_record(li->common.vflow);
+
+    qd_log(tcplite_context->log_source, QD_LOG_INFO,
+            "Deleted TcpListener for %s, %s:%s",
+            li->adaptor_config->address, li->adaptor_config->host, li->adaptor_config->port);
+
+    qd_timer_free(li->activate_timer);
+    qd_free_adaptor_config(li->adaptor_config);
+    sys_mutex_free(&li->lock);
+    free_tcplite_listener_t(li);
+}
+
+
+static void free_connector(tcplite_connector_t *cr)
+{
+    sys_mutex_lock(&tcplite_context->lock);
+    DEQ_REMOVE(tcplite_context->connectors, cr);
+    sys_mutex_unlock(&tcplite_context->lock);
+
+    vflow_end_record(cr->common.vflow);
+
+    qd_log(tcplite_context->log_source, QD_LOG_INFO,
+            "Deleted TcpConnector for %s, %s:%s",
+            cr->adaptor_config->address, cr->adaptor_config->host, cr->adaptor_config->port);
+
+    qd_timer_free(cr->activate_timer);
+    qd_free_adaptor_config(cr->adaptor_config);
+    sys_mutex_free(&cr->lock);
+    free_tcplite_connector_t(cr);
+}
+
+
 static void free_connection_IO(void *context)
 {
     // No thread assertion here - can be RAW_IO or TIMER_IO
+    bool free_parent = false;
     tcplite_connection_t *conn = (tcplite_connection_t*) context;
     qd_log(tcplite_context->log_source, QD_LOG_DEBUG, "[C%"PRIu64"] Cleaning up resources", conn->common.conn_id);
 
@@ -311,14 +350,24 @@ static void free_connection_IO(void *context)
         tcplite_listener_t *li = (tcplite_listener_t*) conn->common.parent;
         sys_mutex_lock(&li->lock);
         DEQ_REMOVE(li->connections, conn);
-        li->connections_closed++;
+        if (li->closing && DEQ_SIZE(li->connections) == 0) {
+            free_parent = true;
+        }
         sys_mutex_unlock(&li->lock);
+        if (free_parent) {
+            free_listener(li);
+        }
     } else {
         tcplite_connector_t *cr = (tcplite_connector_t*) conn->common.parent;
         sys_mutex_lock(&cr->lock);
         DEQ_REMOVE(cr->connections, conn);
-        cr->connections_closed++;
+        if (cr->closing && DEQ_SIZE(cr->connections) == 0) {
+            free_parent = true;
+        }
         sys_mutex_unlock(&cr->lock);
+        if (free_parent) {
+            free_connector(cr);
+        }
     }
 
     sys_atomic_destroy(&conn->core_activation);
@@ -407,6 +456,18 @@ static void close_connection_XSIDE_IO(tcplite_connection_t *conn, bool no_delay)
     conn->outbound_delivery = 0;
     conn->common.core_conn  = 0;
     conn->common.vflow      = 0;
+
+    if (!!conn->common.parent && conn->common.parent->context_type == TL_LISTENER) {
+        tcplite_listener_t *li = (tcplite_listener_t*) conn->common.parent;
+        sys_mutex_lock(&li->lock);
+        li->connections_closed++;
+        sys_mutex_unlock(&li->lock);
+    } else {
+        tcplite_connector_t *cr = (tcplite_connector_t*) conn->common.parent;
+        sys_mutex_lock(&cr->lock);
+        cr->connections_closed++;
+        sys_mutex_unlock(&cr->lock);
+    }
 
     if (no_delay) {
         free_connection_IO(conn);
@@ -1449,6 +1510,7 @@ QD_EXPORT void *qd_dispatch_configure_tcp_listener(qd_dispatch_t *qd, qd_entity_
 
     li->activate_timer = qd_timer(tcplite_context->qd, on_core_activate_TIMER_IO, li);
     li->common.context_type = TL_LISTENER;
+    sys_mutex_init(&li->lock);
 
     sys_mutex_lock(&tcplite_context->lock);
     DEQ_INSERT_TAIL(tcplite_context->listeners, li);
@@ -1465,31 +1527,28 @@ QD_EXPORT void qd_dispatch_delete_tcp_listener(qd_dispatch_t *qd, void *impl)
     SET_THREAD_UNKNOWN;
     tcplite_listener_t *li = (tcplite_listener_t*) impl;
     if (li) {
-        qdr_connection_closed(li->common.core_conn);
+        li->closing = true;
 
-        if (!!li->adaptor_listener) {
-            qd_adaptor_listener_close(li->adaptor_listener);
+        if (!tcplite_context->adaptor_finalizing) {
+            if (!!li->common.core_conn) {
+                qdr_connection_closed(li->common.core_conn);
+            }
+
+            if (!!li->adaptor_listener) {
+                qd_adaptor_listener_close(li->adaptor_listener);
+            }
+        } else {
+            tcplite_connection_t *conn = DEQ_HEAD(li->connections);
+            if (!!conn) {
+                while (conn) {
+                    tcplite_connection_t *next_conn = DEQ_NEXT(conn);
+                    close_connection_XSIDE_IO(conn, tcplite_context->adaptor_finalizing);
+                    conn = next_conn;
+                }
+            } else {
+                free_listener(li);
+            }
         }
-
-        sys_mutex_lock(&tcplite_context->lock);
-        DEQ_REMOVE(tcplite_context->listeners, li);
-        sys_mutex_unlock(&tcplite_context->lock);
-
-        tcplite_connection_t *conn = DEQ_HEAD(li->connections);
-        while (conn) {
-            close_connection_XSIDE_IO(conn, tcplite_context->adaptor_finalizing);
-            conn = DEQ_HEAD(li->connections);
-        }
-
-        vflow_end_record(li->common.vflow);
-
-        qd_log(tcplite_context->log_source, QD_LOG_INFO,
-               "Deleted TcpListener for %s, %s:%s",
-               li->adaptor_config->address, li->adaptor_config->host, li->adaptor_config->port);
-
-        qd_timer_free(li->activate_timer);
-        qd_free_adaptor_config(li->adaptor_config);
-        free_tcplite_listener_t(li);
     }
 }
 
@@ -1539,6 +1598,7 @@ QD_EXPORT void *qd_dispatch_configure_tcp_connector(qd_dispatch_t *qd, qd_entity
 
     cr->activate_timer = qd_timer(tcplite_context->qd, on_core_activate_TIMER_IO, cr);
     cr->common.context_type = TL_CONNECTOR;
+    sys_mutex_init(&cr->lock);
 
     qd_log(tcplite_context->log_source, QD_LOG_INFO,
             "Configured TcpConnector for %s, %s:%s",
@@ -1557,27 +1617,22 @@ QD_EXPORT void qd_dispatch_delete_tcp_connector(qd_dispatch_t *qd, void *impl)
     SET_THREAD_UNKNOWN;
     tcplite_connector_t *cr = (tcplite_connector_t*) impl;
     if (cr) {
-        qdr_connection_closed(cr->common.core_conn);
+        cr->closing = true;
 
-        sys_mutex_lock(&tcplite_context->lock);
-        DEQ_REMOVE(tcplite_context->connectors, cr);
-        sys_mutex_unlock(&tcplite_context->lock);
-
-        tcplite_connection_t *conn = DEQ_HEAD(cr->connections);
-        while (conn) {
-            close_connection_XSIDE_IO(conn, tcplite_context->adaptor_finalizing);
-            conn = DEQ_HEAD(cr->connections);
+        if (!tcplite_context->adaptor_finalizing) {
+            qdr_connection_closed(cr->common.core_conn);
+        } else {
+            tcplite_connection_t *conn = DEQ_HEAD(cr->connections);
+            if (!!conn) {
+                while (conn) {
+                    tcplite_connection_t *next_conn = DEQ_NEXT(conn);
+                    close_connection_XSIDE_IO(conn, tcplite_context->adaptor_finalizing);
+                    conn = next_conn;
+                }
+            } else {
+                free_connector(cr);
+            }
         }
-
-        vflow_end_record(cr->common.vflow);
-
-        qd_log(tcplite_context->log_source, QD_LOG_INFO,
-               "Deleted TcpConnector for %s, %s:%s",
-               cr->adaptor_config->address, cr->adaptor_config->host, cr->adaptor_config->port);
-
-        qd_timer_free(cr->activate_timer);
-        qd_free_adaptor_config(cr->adaptor_config);
-        free_tcplite_connector_t(cr);
     }
 }
 
