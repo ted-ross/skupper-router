@@ -1557,28 +1557,28 @@ QD_EXPORT qd_error_t qd_entity_refresh_tcpListener(qd_entity_t* entity, void *im
 {
     SET_THREAD_UNKNOWN;
     tcplite_listener_t *li = (tcplite_listener_t*) impl;
+    uint64_t co = 0;
+    uint64_t cc = 0;
+    qd_listener_oper_status_t os = QD_LISTENER_OPER_DOWN;
 
     if (!!li->adaptor_listener) {
-        qd_listener_oper_status_t os = qd_adaptor_listener_oper_status(li->adaptor_listener);
-
         sys_mutex_lock(&li->lock);
-        uint64_t co = li->connections_opened;
-        uint64_t cc = li->connections_closed;
+        os = qd_adaptor_listener_oper_status(li->adaptor_listener);
+        co = li->connections_opened;
+        cc = li->connections_closed;
         sys_mutex_unlock(&li->lock);
-
-        if (   qd_entity_set_long(entity, "bytesIn",           0) == 0
-            && qd_entity_set_long(entity, "bytesOut",          0) == 0
-            && qd_entity_set_long(entity, "connectionsOpened", co) == 0
-            && qd_entity_set_long(entity, "connectionsClosed", cc) == 0
-            && qd_entity_set_string(entity, "operStatus", os == QD_LISTENER_OPER_UP ? "up" : "down") == 0)
-        {
-            return QD_ERROR_NONE;
-        }
-
-        return qd_error_code();
     }
 
-    return QD_ERROR_NONE;
+    if (   qd_entity_set_long(entity, "bytesIn",           0) == 0
+        && qd_entity_set_long(entity, "bytesOut",          0) == 0
+        && qd_entity_set_long(entity, "connectionsOpened", co) == 0
+        && qd_entity_set_long(entity, "connectionsClosed", cc) == 0
+        && qd_entity_set_string(entity, "operStatus", os == QD_LISTENER_OPER_UP ? "up" : "down") == 0)
+    {
+        return QD_ERROR_NONE;
+    }
+
+    return qd_error_code();
 }
 
 
