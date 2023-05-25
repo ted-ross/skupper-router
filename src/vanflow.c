@@ -1455,7 +1455,7 @@ void vflow_set_ref_from_iter(vflow_record_t *record, vflow_attribute_t attribute
             _vflow_post_work(work);
         } else {
             free_vflow_work_t(work);
-            qd_log(state->log, QD_LOG_WARNING, "Reference ID cannot be parsed from the received field");
+            qd_log(LOG_FLOW_LOG, QD_LOG_WARNING, "Reference ID cannot be parsed from the received field");
         }
     }
 }
