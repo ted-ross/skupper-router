@@ -486,6 +486,8 @@ static void close_connection_XSIDE_IO(tcplite_connection_t *conn, bool no_delay)
 
 static void grant_read_buffers_XSIDE_IO(tcplite_connection_t *conn, const size_t capacity)
 {
+    ASSERT_RAW_IO;
+
     //
     // Define the allocation tiers.  The tier values are the number of read buffers to be granted
     // to raw connections based on the percentage of usage of the router-wide buffer ceiling.
@@ -494,8 +496,6 @@ static void grant_read_buffers_XSIDE_IO(tcplite_connection_t *conn, const size_t
 #define TIER_2 4  // [50% .. 75%)
 #define TIER_3 2  // [75% .. 85%)
 #define TIER_4 1  // [85% .. 100%]
-
-    ASSERT_RAW_IO;
 
     //
     // Since we can't query Proton for the maximum read-buffer capacity, we will infer it from
@@ -507,7 +507,7 @@ static void grant_read_buffers_XSIDE_IO(tcplite_connection_t *conn, const size_t
     }
 
     //
-    // Get the "held_by_threads" stats for adaptor buffers as an approximation of how many
+    // Get the "held_by_threads" stats for router buffers as an approximation of how many
     // buffers are in-use.  This is an approximation since it also counts free buffers held
     // in the per-thread free-pools.  Since we will be dealing with large numbers here, the
     // number of buffers in free-pools will not be significant.
@@ -518,7 +518,7 @@ static void grant_read_buffers_XSIDE_IO(tcplite_connection_t *conn, const size_t
     // Note also that the stats pointer may be NULL if no buffers have yet been allocated.
     //
     qd_alloc_stats_t *stats          = alloc_stats_qd_buffer_t();
-    uint64_t          buffers_in_use = !!stats ? stats->held_by_threads : 0;
+    uint64_t          buffers_in_use = !!stats ? stats->held_by_threads : 0;  // Note: Suppressed race here
 
     //
     // Choose the grant-allocation tier based on the number of buffers in use.
@@ -533,8 +533,7 @@ static void grant_read_buffers_XSIDE_IO(tcplite_connection_t *conn, const size_t
     }
 
     //
-    // Determine how many of the desired buffers are already granted.  This will always be a
-    // non-negative value.
+    // Determine how many buffers are already granted.  This will always be a non-negative value.
     //
     size_t already_granted = max_capacity - capacity;
 
@@ -558,8 +557,9 @@ static void grant_read_buffers_XSIDE_IO(tcplite_connection_t *conn, const size_t
             raw_buffers[i].size     = 0;
         }
 
-        qd_log(LOG_TCP_ADAPTOR, QD_LOG_DEBUG, "[C%"PRIu64"] grant_read_buffers_XSIDE_IO - %ld", conn->common.conn_id, granted);
         pn_raw_connection_give_read_buffers(conn->raw_conn, raw_buffers, granted);
+
+        qd_log(LOG_TCP_ADAPTOR, QD_LOG_DEBUG, "[C%"PRIu64"] grant_read_buffers_XSIDE_IO - %ld", conn->common.conn_id, granted);
     }
 }
 
