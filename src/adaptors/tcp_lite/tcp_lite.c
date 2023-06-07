@@ -26,6 +26,7 @@
 #include <qpid/dispatch/server.h>
 #include <qpid/dispatch/log.h>
 #include <qpid/dispatch/cutthrough_utils.h>
+#include <qpid/dispatch/platform.h>
 #include <proton/proactor.h>
 #include <proton/raw_connection.h>
 #include <proton/listener.h>
@@ -1759,7 +1760,14 @@ static void ADAPTOR_init(qdr_core_t *core, void **adaptor_context)
     // Determine the configured buffer memory ceiling.
     //
     char     *ceiling_string = getenv("SKUPPER_ROUTER_MEMORY_CEILING");
-    uint64_t  memory_ceiling = (uint64_t) 4 * (uint64_t) 1024 * (uint64_t) 1024 * (uint64_t) 1024;  // 4 Gig default
+    uint64_t  memory_ceiling = (uint64_t) qd_platform_memory_size();
+
+    //
+    // Use 4Gig as a default if the platform fails to return a valid size
+    //
+    if (memory_ceiling == 0) {
+        memory_ceiling = (uint64_t) 4 * (uint64_t) 1024 * (uint64_t) 1024 * (uint64_t) 1024;
+    }
 
     if (!!ceiling_string) {
         long long convert = atoll(ceiling_string);
@@ -1773,7 +1781,9 @@ static void ADAPTOR_init(qdr_core_t *core, void **adaptor_context)
     buffer_threshold_75 = (buffer_ceiling / 20) * 15;
     buffer_threshold_85 = (buffer_ceiling / 20) * 17;
 
-    qd_log(LOG_TCP_ADAPTOR, QD_LOG_INFO, "Adaptor buffer memory ceiling: %"PRIu64" (%"PRIu64" buffers)", memory_ceiling, buffer_ceiling);
+    const char *mc_unit;
+    double mc_normalized = normalize_memory_size(memory_ceiling, &mc_unit);
+    qd_log(LOG_TCP_ADAPTOR, QD_LOG_INFO, "Router buffer memory ceiling: %.2f %s (%"PRIu64" buffers)", mc_normalized, mc_unit, buffer_ceiling);
 }
 
 
