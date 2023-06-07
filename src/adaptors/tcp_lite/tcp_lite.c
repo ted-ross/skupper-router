@@ -75,6 +75,12 @@ typedef struct {
 
 static tcplite_context_t *tcplite_context;
 
+static uint64_t buffer_ceiling = 0;
+static uint64_t buffer_threshold_50;
+static uint64_t buffer_threshold_75;
+static uint64_t buffer_threshold_85;
+
+
 //
 // Forward References
 //
@@ -477,22 +483,83 @@ static void close_connection_XSIDE_IO(tcplite_connection_t *conn, bool no_delay)
 }
 
 
-static void grant_read_buffers_XSIDE_IO(tcplite_connection_t *conn, const size_t count)
+static void grant_read_buffers_XSIDE_IO(tcplite_connection_t *conn, const size_t capacity)
 {
-    ASSERT_RAW_IO;
-    pn_raw_buffer_t raw_buffers[count];
+    //
+    // Define the allocation tiers.  The tier values are the number of read buffers to be granted
+    // to raw connections based on the percentage of usage of the router-wide buffer ceiling.
+    //
+#define TIER_1 8  // [0% .. 50%)
+#define TIER_2 4  // [50% .. 75%)
+#define TIER_3 2  // [75% .. 85%)
+#define TIER_4 1  // [85% .. 100%]
 
-    for (size_t i = 0; i < count; i++) {
-        qd_buffer_t *buf = qd_buffer();
-        raw_buffers[i].context  = (uintptr_t) buf;
-        raw_buffers[i].bytes    = (char*) qd_buffer_base(buf);
-        raw_buffers[i].capacity = qd_buffer_capacity(buf);
-        raw_buffers[i].offset   = 0;
-        raw_buffers[i].size     = 0;
+    ASSERT_RAW_IO;
+
+    //
+    // Since we can't query Proton for the maximum read-buffer capacity, we will infer it from
+    // calls to pn_raw_connection_read_buffers_capacity.
+    //
+    static size_t max_capacity = 0;
+    if (capacity > max_capacity) {
+        max_capacity = capacity;
     }
 
-    qd_log(LOG_TCP_ADAPTOR, QD_LOG_DEBUG, "[C%"PRIu64"] grant_read_buffers_XSIDE_IO - %ld", conn->common.conn_id, count);
-    pn_raw_connection_give_read_buffers(conn->raw_conn, raw_buffers, count);
+    //
+    // Get the "held_by_threads" stats for adaptor buffers as an approximation of how many
+    // buffers are in-use.  This is an approximation since it also counts free buffers held
+    // in the per-thread free-pools.  Since we will be dealing with large numbers here, the
+    // number of buffers in free-pools will not be significant.
+    //
+    // Note that there is a thread race on the access of this value.  There's no danger associated
+    // with getting a partial or corrupted value from time to time.
+    //
+    // Note also that the stats pointer may be NULL if no buffers have yet been allocated.
+    //
+    qd_alloc_stats_t *stats          = alloc_stats_qd_buffer_t();
+    uint64_t          buffers_in_use = !!stats ? stats->held_by_threads : 0;
+
+    //
+    // Choose the grant-allocation tier based on the number of buffers in use.
+    //
+    size_t desired = TIER_4;
+    if (buffers_in_use < buffer_threshold_50) {
+        desired = TIER_1;
+    } else if (buffers_in_use < buffer_threshold_75) {
+        desired = TIER_2;
+    } else if (buffers_in_use < buffer_threshold_85) {
+        desired = TIER_3;
+    }
+
+    //
+    // Determine how many of the desired buffers are already granted.  This will always be a
+    // non-negative value.
+    //
+    size_t already_granted = max_capacity - capacity;
+
+    //
+    // If we desire to grant additional buffers, calculate the number to grant now.
+    //
+    const size_t granted = desired > already_granted ? desired - already_granted : 0;
+
+    if (granted > 0) {
+        //
+        // Grant the buffers.
+        //
+        pn_raw_buffer_t raw_buffers[granted];
+
+        for (size_t i = 0; i < granted; i++) {
+            qd_buffer_t *buf = qd_buffer();
+            raw_buffers[i].context  = (uintptr_t) buf;
+            raw_buffers[i].bytes    = (char*) qd_buffer_base(buf);
+            raw_buffers[i].capacity = qd_buffer_capacity(buf);
+            raw_buffers[i].offset   = 0;
+            raw_buffers[i].size     = 0;
+        }
+
+        qd_log(LOG_TCP_ADAPTOR, QD_LOG_DEBUG, "[C%"PRIu64"] grant_read_buffers_XSIDE_IO - %ld", conn->common.conn_id, granted);
+        pn_raw_connection_give_read_buffers(conn->raw_conn, raw_buffers, granted);
+    }
 }
 
 
@@ -1687,6 +1754,26 @@ static void ADAPTOR_init(qdr_core_t *core, void **adaptor_context)
                                                    CORE_connection_trace);
     sys_mutex_init(&tcplite_context->lock);
     tcplite_context->proactor = qd_server_proactor(tcplite_context->server);
+
+    //
+    // Determine the configured buffer memory ceiling.
+    //
+    char     *ceiling_string = getenv("SKUPPER_ROUTER_MEMORY_CEILING");
+    uint64_t  memory_ceiling = (uint64_t) 4 * (uint64_t) 1024 * (uint64_t) 1024 * (uint64_t) 1024;  // 4 Gig default
+
+    if (!!ceiling_string) {
+        long long convert = atoll(ceiling_string);
+        if (convert > 0) {
+            memory_ceiling = (uint64_t) convert;
+        }
+    }
+
+    buffer_ceiling = MAX(memory_ceiling / QD_BUFFER_SIZE, 100);
+    buffer_threshold_50 = buffer_ceiling / 2;
+    buffer_threshold_75 = (buffer_ceiling / 20) * 15;
+    buffer_threshold_85 = (buffer_ceiling / 20) * 17;
+
+    qd_log(LOG_TCP_ADAPTOR, QD_LOG_INFO, "Adaptor buffer memory ceiling: %"PRIu64" (%"PRIu64" buffers)", memory_ceiling, buffer_ceiling);
 }
 
 
