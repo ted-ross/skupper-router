@@ -23,6 +23,7 @@
 #include "delivery.h"
 #include "adaptors/adaptor_common.h"
 #include "adaptors/adaptor_listener.h"
+#include "adaptors/adaptor_tls.h"
 
 
 typedef struct tcplite_common_t     tcplite_common_t;
@@ -59,6 +60,7 @@ struct tcplite_listener_t {
     sys_mutex_t                lock;
     qd_timer_t                *activate_timer;
     qd_adaptor_config_t       *adaptor_config;
+    qd_tls_domain_t           *tls_domain;
     uint64_t                   link_id;
     qdr_link_t                *in_link;
     qd_adaptor_listener_t     *adaptor_listener;
@@ -75,6 +77,7 @@ typedef struct tcplite_connector_t {
     sys_mutex_t                lock;
     qd_timer_t                *activate_timer;
     qd_adaptor_config_t       *adaptor_config;
+    qd_tls_domain_t           *tls_domain;
     uint64_t                   link_id;
     qdr_link_t                *out_link;
     tcplite_connection_list_t  connections;

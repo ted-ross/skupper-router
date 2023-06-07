@@ -1163,24 +1163,26 @@ static int AMQP_link_flow_handler(void* context, qd_link_t *link)
                         }
                     }
 
-                    pn_delivery_t      *pdlv = pn_link_current(pnlink);
-                    qdr_delivery_t     *qdlv = qdr_node_delivery_qdr_from_pn(pdlv);
-                    qdr_delivery_ref_t *dref = new_qdr_delivery_ref_t();
-                    bool used = false;
+                    pn_delivery_t *pdlv = pn_link_current(pnlink);
+                    if (!!pdlv) {
+                        qdr_delivery_t     *qdlv = qdr_node_delivery_qdr_from_pn(pdlv);
+                        qdr_delivery_ref_t *dref = new_qdr_delivery_ref_t();
+                        bool used = false;
 
-                    sys_spinlock_lock(&conn->outbound_cutthrough_spinlock);
-                    if (!qdlv->cutthrough_list_ref) {
-                        DEQ_ITEM_INIT(dref);
-                        dref->dlv = qdlv;
-                        qdlv->cutthrough_list_ref = dref;
-                        DEQ_INSERT_TAIL(conn->outbound_cutthrough_worklist, dref);
-                        qdr_delivery_incref(qdlv, "Recover from Q3 stall");
-                        used = true;
-                    }
-                    sys_spinlock_unlock(&conn->outbound_cutthrough_spinlock);
+                        sys_spinlock_lock(&conn->outbound_cutthrough_spinlock);
+                        if (!qdlv->cutthrough_list_ref) {
+                            DEQ_ITEM_INIT(dref);
+                            dref->dlv = qdlv;
+                            qdlv->cutthrough_list_ref = dref;
+                            DEQ_INSERT_TAIL(conn->outbound_cutthrough_worklist, dref);
+                            qdr_delivery_incref(qdlv, "Recover from Q3 stall");
+                            used = true;
+                        }
+                        sys_spinlock_unlock(&conn->outbound_cutthrough_spinlock);
 
-                    if (!used) {
-                        free_qdr_delivery_ref_t(dref);
+                        if (!used) {
+                            free_qdr_delivery_ref_t(dref);
+                        }
                     }
 
                     blink = DEQ_HEAD(*blinks);

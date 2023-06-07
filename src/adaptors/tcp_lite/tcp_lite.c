@@ -320,6 +320,7 @@ static void free_listener(tcplite_listener_t *li)
             li->adaptor_config->address, li->adaptor_config->host, li->adaptor_config->port);
 
     qd_timer_free(li->activate_timer);
+    qd_tls_domain_decref(li->tls_domain);
     qd_free_adaptor_config(li->adaptor_config);
     sys_mutex_free(&li->lock);
     free_tcplite_listener_t(li);
@@ -339,6 +340,7 @@ static void free_connector(tcplite_connector_t *cr)
             cr->adaptor_config->address, cr->adaptor_config->host, cr->adaptor_config->port);
 
     qd_timer_free(cr->activate_timer);
+    qd_tls_domain_decref(cr->tls_domain);
     qd_free_adaptor_config(cr->adaptor_config);
     sys_mutex_free(&cr->lock);
     free_tcplite_connector_t(cr);
@@ -1557,6 +1559,10 @@ static void CORE_connection_trace(void *context, qdr_connection_t *conn, bool tr
 //=================================================================================
 // Entrypoints for Management
 //=================================================================================
+#define TCP_NUM_ALPN_PROTOCOLS 2
+// const char *tcp_alpn_protocols[TCP_NUM_ALPN_PROTOCOLS] = {"h2", "http/1.1", "http/1.0"};
+const char *tcp_alpn_protocols[TCP_NUM_ALPN_PROTOCOLS] = {"http/1.1", "h2"};
+
 QD_EXPORT void *qd_dispatch_configure_tcp_listener(qd_dispatch_t *qd, qd_entity_t *entity)
 {
     SET_THREAD_UNKNOWN;
@@ -1569,6 +1575,17 @@ QD_EXPORT void *qd_dispatch_configure_tcp_listener(qd_dispatch_t *qd, qd_entity_
         qd_log(LOG_TCP_ADAPTOR, QD_LOG_ERROR, "Unable to create tcp listener: %s", qd_error_message());
         free_tcplite_listener_t(li);
         return 0;
+    }
+
+    if (li->adaptor_config->ssl_profile_name) {
+        // On the TCP TLS listener side, send "http/1.1", "http/1.0" and "h2" as ALPN protocols
+        li->tls_domain = qd_tls_domain(li->adaptor_config, qd, LOG_TCP_ADAPTOR, tcp_alpn_protocols,
+                                       TCP_NUM_ALPN_PROTOCOLS, true);
+        if (!li->tls_domain) {
+            // note qd_tls_domain logged the error
+            free_tcplite_listener_t(li);
+            return 0;
+        }
     }
 
     qd_log(LOG_TCP_ADAPTOR, QD_LOG_INFO,
@@ -1661,6 +1678,15 @@ QD_EXPORT void *qd_dispatch_configure_tcp_connector(qd_dispatch_t *qd, qd_entity
         qd_log(LOG_TCP_ADAPTOR, QD_LOG_ERROR, "Unable to create tcp connector: %s", qd_error_message());
         free_tcplite_connector_t(cr);
         return 0;
+    }
+
+    if (cr->adaptor_config->ssl_profile_name) {
+        cr->tls_domain = qd_tls_domain(cr->adaptor_config, qd, LOG_TCP_ADAPTOR, 0, 0, false);
+        if (!cr->tls_domain) {
+            // note qd_tls_domain() logged the error
+            free_tcplite_connector_t(cr);
+            return 0;
+        }
     }
 
     cr->activate_timer = qd_timer(tcplite_context->qd, on_core_activate_TIMER_IO, cr);
