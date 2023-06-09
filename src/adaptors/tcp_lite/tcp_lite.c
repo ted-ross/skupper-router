@@ -46,7 +46,7 @@
 
 ALLOC_DEFINE(tcplite_listener_t);
 ALLOC_DEFINE(tcplite_connector_t);
-ALLOC_DEFINE(tcplite_connection_t);
+ALLOC_DEFINE_SAFE(tcplite_connection_t);
 
 static const char *state_names[] =
 { "LSIDE_INITIAL", "LSIDE_LINK_SETUP", "LSIDE_STREAM_START", "LSIDE_FLOW",

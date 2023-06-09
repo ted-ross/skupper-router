@@ -33,7 +33,7 @@ typedef struct tcplite_connection_t tcplite_connection_t;
 
 ALLOC_DECLARE(tcplite_listener_t);
 ALLOC_DECLARE(tcplite_connector_t);
-ALLOC_DECLARE(tcplite_connection_t);
+ALLOC_DECLARE_SAFE(tcplite_connection_t);
 
 DEQ_DECLARE(tcplite_listener_t,   tcplite_listener_list_t);
 DEQ_DECLARE(tcplite_connector_t,  tcplite_connector_list_t);

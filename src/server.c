@@ -79,7 +79,7 @@ struct qd_server_t {
 ALLOC_DEFINE(qd_listener_t);
 ALLOC_DEFINE(qd_connector_t);
 ALLOC_DEFINE(qd_deferred_call_t);
-ALLOC_DEFINE(qd_connection_t);
+ALLOC_DEFINE_SAFE(qd_connection_t);
 
 const char *MECH_EXTERNAL = "EXTERNAL";
 

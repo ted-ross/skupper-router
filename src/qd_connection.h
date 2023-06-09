@@ -95,6 +95,6 @@ struct qd_connection_t {
 };
 
 DEQ_DECLARE(qd_connection_t, qd_connection_list_t);
-ALLOC_DECLARE(qd_connection_t);
+ALLOC_DECLARE_SAFE(qd_connection_t);
 
 #endif
