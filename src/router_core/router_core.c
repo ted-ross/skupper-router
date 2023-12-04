@@ -91,7 +91,7 @@ qdr_core_t *qdr_core(qd_dispatch_t *qd, qd_router_mode_t mode, const char *area,
     // freed by qd_dispatch_free()
     //
     if (!!van_id) {
-        qd_log(LOG_ROUTER_CORE, QD_LOG_INFO, "Router is a member of Application Network: %s", van_id);
+        qd_log(LOG_ROUTER, QD_LOG_INFO, "Router is a member of Application Network: %s", van_id);
     }
 
     //
